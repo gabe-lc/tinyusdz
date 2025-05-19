@@ -2131,8 +2131,6 @@ class Value {
 
   bool is_empty() const { return v_.type_id() == value::TYPE_ID_NULL; }
 
-  bool is_none() const { return v_.type_id() == value::TYPE_ID_VALUEBLOCK; }
-
  private:
   // any_value v_;
   linb::any v_{nullptr};
@@ -2346,12 +2344,11 @@ struct TimeSamples {
     _dirty = true;
   }
 
-  // Value may be None(ValueBlock)
   void add_sample(double t, const value::Value &v) {
     Sample s;
     s.t = t;
     s.value = v;
-    s.blocked = v.is_none();
+    s.blocked = false;
     _samples.push_back(s);
     _dirty = true;
   }

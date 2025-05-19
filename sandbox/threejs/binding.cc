@@ -58,7 +58,7 @@ class TinyUSDZLoader {
   /// `binary` is the buffer for TinyUSDZ binary(e.g. buffer read by
   /// fs.readFileSync) std::string can be used as UInt8Array in JS layer.
   ///
-  TinyUSDZLoader(const std::string &binary) {
+  TinyUSDZLoader(const std::string &binary, bool autoConvertToRender = true) {
     tinyusdz::Stage stage;
 
     loaded_ = tinyusdz::LoadUSDFromMemory(
@@ -100,10 +100,12 @@ class TinyUSDZLoader {
     tinyusdz::tydra::RenderSceneConverter converter;
 
     // env.timecode = timecode; // TODO
-    loaded_ = converter.ConvertToRenderScene(env, &render_scene_);
-    if (!loaded_) {
-      std::cerr << "Failed to convert USD Stage to RenderScene: \n"
-                << converter.GetError() << "\n";
+    if(autoConvertToRender) {
+      loaded_ = converter.ConvertToRenderScene(env, &render_scene_);
+      if (!loaded_) {
+        std::cerr << "Failed to convert USD Stage to RenderScene: \n"
+                  << converter.GetError() << "\n";
+      }
     }
   }
   ~TinyUSDZLoader() {}
@@ -229,6 +231,60 @@ class TinyUSDZLoader {
     return mesh;
   }
 
+  emscripten::val getMeshPositions(int mesh_id) const {
+    emscripten::val arr = emscripten::val::array();
+  
+    if (!loaded_) {
+      return arr;
+    }
+  
+    if (mesh_id >= render_scene_.meshes.size()) {
+      return arr;
+    }
+  
+    const auto &mesh = render_scene_.meshes[mesh_id];
+    const float *positions = reinterpret_cast<const float *>(mesh.points.data());
+    return emscripten::val(emscripten::typed_memory_view(mesh.points.size() * 3, positions));
+  }
+  
+  emscripten::val getMeshIndices(int mesh_id) const {
+    emscripten::val arr = emscripten::val::array();
+  
+    if (!loaded_) {
+      return arr;
+    }
+  
+    if (mesh_id >= render_scene_.meshes.size()) {
+      return arr;
+    }
+  
+    const auto &mesh = render_scene_.meshes[mesh_id];
+    const uint32_t *indices = mesh.faceVertexIndices().data();
+    return emscripten::val(emscripten::typed_memory_view(mesh.faceVertexIndices().size(), indices));
+  }  
+
+  bool TranslateMesh(int mesh_id, float dx, float dy, float dz) {
+    if (!loaded_) {
+        std::cerr << "TranslateMesh: Scene not loaded.\n";
+        return false;
+    }
+
+    if (mesh_id >= render_scene_.meshes.size()) {
+        std::cerr << "TranslateMesh: Invalid mesh ID.\n";
+        return false;
+    }
+
+    auto &mesh = render_scene_.meshes[mesh_id];
+
+    for (auto &point : mesh.points) {
+        point[0] += dx; // X
+        point[1] += dy; // Y
+        point[2] += dz; // Z
+    }
+
+    return true;
+  }
+
   bool ok() const { return loaded_; }
 
   const std::string error() const { return error_; }
@@ -242,21 +298,92 @@ class TinyUSDZLoader {
   tinyusdz::USDZAsset usdz_asset_;
 };
 
+
+static bool CollectMeshPaths(const tinyusdz::Path &path,
+  const tinyusdz::Prim &prim,
+  const int depth,
+  void *userdata,
+  std::string *err) {
+auto mesh_paths = reinterpret_cast<std::vector<std::string> *>(userdata);
+
+if (prim.is<tinyusdz::GeomMesh>()) {
+mesh_paths->push_back(path.full_path_name());
+}
+
+return true;  // continue traversal
+}
+
+std::vector<std::string> ExtractMeshPaths(const tinyusdz::Stage &stage) {
+std::vector<std::string> mesh_paths;
+std::string err;
+tinyusdz::tydra::VisitPrims(stage, CollectMeshPaths, &mesh_paths, &err);
+return mesh_paths;
+}
+
+std::vector<std::string> GetMeshPathsFromFile(const std::string &filepath) {
+  tinyusdz::Stage stage;
+  std::string warn, err;
+
+  bool ret = tinyusdz::LoadUSDZFromFile(filepath, &stage, &warn, &err);
+  if (!ret) {
+      printf("Failed to load USDZ: %s\n", err.c_str());
+      return {};
+  }
+
+  std::vector<std::string> mesh_paths;
+  tinyusdz::tydra::VisitPrims(stage, CollectMeshPaths, &mesh_paths, &err);
+  return mesh_paths;
+}
+
+std::vector<std::string> GetMeshPathsFromMemory(uintptr_t bufferPtr, size_t bufferSize) {
+  const uint8_t* data = reinterpret_cast<const uint8_t*>(bufferPtr);
+
+  tinyusdz::Stage stage;
+  std::string warn, err;
+
+  // Try USDZ first
+  bool ret = tinyusdz::LoadUSDZFromMemory(data, bufferSize, "dummy.usdz", &stage, &warn, &err);
+  if (!ret) {
+      // Fallback to raw USD
+      ret = tinyusdz::LoadUSDFromMemory(data, bufferSize, "dummy.usda", &stage, &warn, &err);
+  }
+
+  if (!ret) {
+      printf("Failed to load USD or USDZ from memory: %s\n", err.c_str());
+      return {};
+  }
+
+  std::vector<std::string> mesh_paths;
+  tinyusdz::tydra::VisitPrims(stage, CollectMeshPaths, &mesh_paths, &err);
+  return mesh_paths;
+}
+
+
+
 // Register STL
 EMSCRIPTEN_BINDINGS(stl_wrappters) {
   register_vector<float>("VectorFloat");
   register_vector<int>("VectorInt");
   register_vector<uint32_t>("VectorUInt");
+  register_vector<std::string>("VectorString");
 }
 
 EMSCRIPTEN_BINDINGS(tinyusdz_module) {
   class_<TinyUSDZLoader>("TinyUSDZLoader")
-      .constructor<const std::string &>()
+      .constructor<const std::string&, bool>()
       .function("getMesh", &TinyUSDZLoader::getMesh)
       .function("numMeshes", &TinyUSDZLoader::numMeshes)
       .function("getMaterial", &TinyUSDZLoader::getMaterial)
       .function("getTexture", &TinyUSDZLoader::getTexture)
       .function("getImage", &TinyUSDZLoader::getImage)
+      .function("getMeshPositions", &TinyUSDZLoader::getMeshPositions)
+      .function("getMeshIndices", &TinyUSDZLoader::getMeshIndices)
+      .function("translateMesh", &TinyUSDZLoader::TranslateMesh)
       .function("ok", &TinyUSDZLoader::ok)
       .function("error", &TinyUSDZLoader::error);
+
+  class_<tinyusdz::Stage>("Stage");
+  function("ExtractMeshPaths", &ExtractMeshPaths);
+  function("GetMeshPathsFromFile", &GetMeshPathsFromFile);
+  function("GetMeshPathsFromMemory", &GetMeshPathsFromMemory, allow_raw_pointers());
 }
