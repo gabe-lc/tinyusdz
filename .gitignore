@@ -355,3 +355,53 @@ compile_commands.json
 
 # Cmake
 CMakeUserPresets.json
+
+# === Additional ignores for C++/TinyUSDZ/WebAssembly ===
+
+# CMake build folders
+/build/
+/out/
+/bin/
+/lib/
+/CMakeFiles/
+/cmake-build-*/
+
+# Generated files
+*.wasm
+*.js
+*.html
+*.map
+*.d
+*.mod
+*.tmp
+*.log
+
+# Intermediate/compiled objects
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.exe
+*.dylib
+
+# Emscripten-generated
+*.data
+*.mem
+
+# IDE/editor folders
+.vscode/
+.idea/
+
+# Python cache (used in some TinyUSDZ tools)
+__pycache__/
+*.pyc
+
+# === TinyUSDZ build output ===
+sandbox/threejs/build_emcc/
+sandbox/threejs/simple/*.wasm
+sandbox/threejs/simple/*.js
+sandbox/threejs/emsdk/
+sandbox/threejs/package-lock.json
+*.patch
+
