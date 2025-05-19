@@ -58,7 +58,7 @@ class TinyUSDZLoader {
   /// `binary` is the buffer for TinyUSDZ binary(e.g. buffer read by
   /// fs.readFileSync) std::string can be used as UInt8Array in JS layer.
   ///
-  TinyUSDZLoader(const std::string &binary, bool autoConvertToRender = true) {
+  TinyUSDZLoader(const std::string &binary) {
     tinyusdz::Stage stage;
 
     loaded_ = tinyusdz::LoadUSDFromMemory(
@@ -100,12 +100,10 @@ class TinyUSDZLoader {
     tinyusdz::tydra::RenderSceneConverter converter;
 
     // env.timecode = timecode; // TODO
-    if (autoConvertToRender) {
-      loaded_ = converter.ConvertToRenderScene(env, &render_scene_);
-      if (!loaded_) {
-        std::cerr << "Failed to convert USD Stage to RenderScene: \n"
-                  << converter.GetError() << "\n";
-      }
+    loaded_ = converter.ConvertToRenderScene(env, &render_scene_);
+    if (!loaded_) {
+      std::cerr << "Failed to convert USD Stage to RenderScene: \n"
+                << converter.GetError() << "\n";
     }
   }
   ~TinyUSDZLoader() {}
@@ -253,7 +251,7 @@ EMSCRIPTEN_BINDINGS(stl_wrappters) {
 
 EMSCRIPTEN_BINDINGS(tinyusdz_module) {
   class_<TinyUSDZLoader>("TinyUSDZLoader")
-      .constructor<const std::string const &, bool>()
+      .constructor<const std::string &>()
       .function("getMesh", &TinyUSDZLoader::getMesh)
       .function("numMeshes", &TinyUSDZLoader::numMeshes)
       .function("getMaterial", &TinyUSDZLoader::getMaterial)
