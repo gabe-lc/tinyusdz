@@ -258,7 +258,7 @@ class TinyUSDZLoader extends Loader {
                 initTinyUSDZNative = module.default;
             } else {
                 //console.log("Loading 32bit module");
-                const module = await import('./tinyusdz.js');
+                const module = await import('./tinyusdz_64.js');
                 initTinyUSDZNative = module.default;
             }
 

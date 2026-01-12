@@ -253,19 +253,85 @@ std::string serializePreviewSurfaceToJson(const PreviewSurfaceShader& shader, co
   json << "\"type\": \"PreviewSurfaceShader\",";
 
   json << "\"useSpecularWorkflow\": " << (shader.useSpecularWorkflow ? "true" : "false") << ",";
-  json << "\"diffuseColor\": " << vec3ToJson(shader.diffuseColor.value) << ",";
-  json << "\"emissiveColor\": " << vec3ToJson(shader.emissiveColor.value) << ",";
-  json << "\"specularColor\": " << vec3ToJson(shader.specularColor.value) << ",";
-  json << "\"metallic\": " << shader.metallic.value << ",";
-  json << "\"roughness\": " << shader.roughness.value << ",";
-  json << "\"clearcoat\": " << shader.clearcoat.value << ",";
-  json << "\"clearcoatRoughness\": " << shader.clearcoatRoughness.value << ",";
-  json << "\"opacity\": " << shader.opacity.value << ",";
+
+  // diffuseColor
+  json << "\"diffuseColor\": " << vec3ToJson(shader.diffuseColor.value);
+  if (shader.diffuseColor.is_texture()) {
+    json << ", \"diffuseColorTextureId\": " << shader.diffuseColor.texture_id;
+  }
+  json << ",";
+
+  // emissiveColor
+  json << "\"emissiveColor\": " << vec3ToJson(shader.emissiveColor.value);
+  if (shader.emissiveColor.is_texture()) {
+    json << ", \"emissiveColorTextureId\": " << shader.emissiveColor.texture_id;
+  }
+  json << ",";
+
+  // specularColor
+  json << "\"specularColor\": " << vec3ToJson(shader.specularColor.value);
+  if (shader.specularColor.is_texture()) {
+    json << ", \"specularColorTextureId\": " << shader.specularColor.texture_id;
+  }
+  json << ",";
+
+  // metallic
+  json << "\"metallic\": " << shader.metallic.value;
+  if (shader.metallic.is_texture()) {
+    json << ", \"metallicTextureId\": " << shader.metallic.texture_id;
+  }
+  json << ",";
+
+  // roughness
+  json << "\"roughness\": " << shader.roughness.value;
+  if (shader.roughness.is_texture()) {
+    json << ", \"roughnessTextureId\": " << shader.roughness.texture_id;
+  }
+  json << ",";
+
+  // clearcoat
+  json << "\"clearcoat\": " << shader.clearcoat.value;
+  if (shader.clearcoat.is_texture()) {
+    json << ", \"clearcoatTextureId\": " << shader.clearcoat.texture_id;
+  }
+  json << ",";
+
+  // clearcoatRoughness
+  json << "\"clearcoatRoughness\": " << shader.clearcoatRoughness.value;
+  if (shader.clearcoatRoughness.is_texture()) {
+    json << ", \"clearcoatRoughnessTextureId\": " << shader.clearcoatRoughness.texture_id;
+  }
+  json << ",";
+
+  // opacity
+  json << "\"opacity\": " << shader.opacity.value;
+  if (shader.opacity.is_texture()) {
+    json << ", \"opacityTextureId\": " << shader.opacity.texture_id;
+  }
+  json << ",";
+
   json << "\"opacityThreshold\": " << shader.opacityThreshold.value << ",";
   json << "\"ior\": " << shader.ior.value << ",";
-  json << "\"normal\": " << vec3ToJson(shader.normal.value) << ",";
-  json << "\"displacement\": " << shader.displacement.value << ",";
+
+  // normal
+  json << "\"normal\": " << vec3ToJson(shader.normal.value);
+  if (shader.normal.is_texture()) {
+    json << ", \"normalTextureId\": " << shader.normal.texture_id;
+  }
+  json << ",";
+
+  // displacement
+  json << "\"displacement\": " << shader.displacement.value;
+  if (shader.displacement.is_texture()) {
+    json << ", \"displacementTextureId\": " << shader.displacement.texture_id;
+  }
+  json << ",";
+
+  // occlusion
   json << "\"occlusion\": " << shader.occlusion.value;
+  if (shader.occlusion.is_texture()) {
+    json << ", \"occlusionTextureId\": " << shader.occlusion.texture_id;
+  }
 
   // Export texture IDs for diffuseColor, emissiveColor, specularColor, metallic, roughness, opacity
   if (shader.diffuseColor.is_texture()) {

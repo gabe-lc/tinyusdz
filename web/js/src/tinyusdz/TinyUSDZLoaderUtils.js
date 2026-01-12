@@ -388,6 +388,20 @@ class TinyUSDZLoaderUtils extends LoaderUtils {
         return 'image/png';
     }
 
+    // Helper to apply colorSpace from USD metadata to Three.js texture
+    static applyColorSpace(texture, usdColorSpace) {
+        // usdColorSpace values: 'srgb', 'raw', 'auto', etc.
+        // 'raw' means linear/data texture (normal maps, roughness, metallic, etc.)
+        // 'srgb' means color data (diffuse, emissive, etc.)
+        if (usdColorSpace === 'srgb' || usdColorSpace === 'sRGB') {
+            texture.colorSpace = THREE.SRGBColorSpace;
+        } else {
+            // 'raw', 'linear', or anything else = linear
+            texture.colorSpace = THREE.LinearSRGBColorSpace;
+        }
+        return texture;
+    }
+
     static async getTextureFromUSD(usdScene, textureId) {
         if (textureId === undefined) return Promise.reject(new Error("textureId undefined"));
 
@@ -395,6 +409,8 @@ class TinyUSDZLoaderUtils extends LoaderUtils {
         const tex = usdScene.getTexture(textureId);
 
         const texImage = usdScene.getImage(tex.textureImageId);
+        // Use usdColorSpace (the authoritative source from USD) with fallback to colorSpace
+        const usdColorSpace = texImage.usdColorSpace || texImage.colorSpace || 'srgb';
         //console.log("Loading texture from URI:", texImage);
 
         // there are 3 states for texture:
@@ -408,13 +424,16 @@ class TinyUSDZLoaderUtils extends LoaderUtils {
 
             if (lowerUri.endsWith('.exr')) {
                 // EXR: Use EXRLoader
-                return new EXRLoader().loadAsync(texImage.uri);
+                const texture = await new EXRLoader().loadAsync(texImage.uri);
+                return this.applyColorSpace(texture, usdColorSpace);
             } else if (lowerUri.endsWith('.hdr')) {
                 // HDR: Use HDRLoader
-                return new HDRLoader().loadAsync(texImage.uri);
+                const texture = await new HDRLoader().loadAsync(texImage.uri);
+                return this.applyColorSpace(texture, usdColorSpace);
             } else {
                 // Standard image
-                return new THREE.TextureLoader().loadAsync(texImage.uri);
+                const texture = await new THREE.TextureLoader().loadAsync(texImage.uri);
+                return this.applyColorSpace(texture, usdColorSpace);
             }
 
         } else if (texImage.bufferId >= 0 && texImage.data) {
@@ -439,6 +458,7 @@ class TinyUSDZLoaderUtils extends LoaderUtils {
                 }
                 texture.flipY = true;
                 texture.needsUpdate = true;
+                this.applyColorSpace(texture, usdColorSpace);
 
                 return Promise.resolve(texture);
 
@@ -453,12 +473,15 @@ class TinyUSDZLoaderUtils extends LoaderUtils {
                         const texture = this.decodeEXRFromBuffer(texImage.data, 'float16');
                         if (texture) {
                             texture.flipY = true;
+                            this.applyColorSpace(texture, usdColorSpace);
                             return Promise.resolve(texture);
                         }
                         // Fallback to Three.js EXRLoader with blob URL
                         const blob = new Blob([texImage.data], { type: mimeType });
                         const blobUrl = URL.createObjectURL(blob);
-                        return new EXRLoader().loadAsync(blobUrl).finally(() => URL.revokeObjectURL(blobUrl));
+                        const exrTexture = await new EXRLoader().loadAsync(blobUrl);
+                        URL.revokeObjectURL(blobUrl);
+                        return this.applyColorSpace(exrTexture, usdColorSpace);
                     } else if (mimeType === 'image/vnd.radiance') {
                         // HDR: Use TinyUSDZ decoder (faster)
                         const tinyusdz = TinyUSDZLoaderUtils._tinyusdz;
@@ -479,19 +502,24 @@ class TinyUSDZLoaderUtils extends LoaderUtils {
                                 texture.magFilter = THREE.LinearFilter;
                                 texture.flipY = true;
                                 texture.needsUpdate = true;
+                                this.applyColorSpace(texture, usdColorSpace);
                                 return Promise.resolve(texture);
                             }
                         }
                         // Fallback to Three.js HDRLoader
                         const blob = new Blob([texImage.data], { type: mimeType });
                         const blobUrl = URL.createObjectURL(blob);
-                        return new HDRLoader().loadAsync(blobUrl).finally(() => URL.revokeObjectURL(blobUrl));
+                        const hdrTexture = await new HDRLoader().loadAsync(blobUrl);
+                        URL.revokeObjectURL(blobUrl);
+                        return this.applyColorSpace(hdrTexture, usdColorSpace);
                     } else {
                         // Standard image format
                         const blob = new Blob([texImage.data], { type: mimeType });
                         const blobUrl = URL.createObjectURL(blob);
                         const loader = new THREE.TextureLoader();
-                        return loader.loadAsync(blobUrl).finally(() => URL.revokeObjectURL(blobUrl));
+                        const texture = await loader.loadAsync(blobUrl);
+                        URL.revokeObjectURL(blobUrl);
+                        return this.applyColorSpace(texture, usdColorSpace);
                     }
                 } catch (error) {
                     console.error("Failed to decode texture data:", error);
