@@ -40,25 +40,37 @@ if (TINYUSDZ_WASM_SIMD)
   endif()
 endif()
 
+# Strip absolute build paths from __FILE__, debug info, and embind error messages
+# so the producer's local filesystem layout doesn't leak into shipped WASM /
+# browser console stack traces in production. Maps both the tinyusdz repo root
+# and any cmake build dir to ".".
+#
+# Note: -ffile-prefix-map does literal-substring matching, so the prefix must be
+# the canonical absolute path. `${CMAKE_SOURCE_DIR}/..` is not normalized by
+# clang and silently won't match — resolve to ABSOLUTE first.
+get_filename_component(TINYUSDZ_REPO_ROOT "${CMAKE_SOURCE_DIR}/.." ABSOLUTE)
+set(TINYUSDZ_PATH_STRIP_FLAGS
+    "-ffile-prefix-map=${TINYUSDZ_REPO_ROOT}=. -ffile-prefix-map=${CMAKE_BINARY_DIR}=.")
+
 if (CMAKE_BUILD_TYPE STREQUAL "Debug")
 
   if (TINYUSDZ_WASM_DEBUG)
     # Enhanced debug mode with source maps
     if (TINYUSDZ_WASM64)
-      set(CMAKE_CXX_FLAGS_DEBUG "-g -gsource-map -sMEMORY64 ${TINYUSDZ_SIMD_FLAGS}")
-      set(CMAKE_C_FLAGS_DEBUG "-g -gsource-map -sMEMORY64 ${TINYUSDZ_SIMD_FLAGS}")
+      set(CMAKE_CXX_FLAGS_DEBUG "-g -gsource-map -sMEMORY64 ${TINYUSDZ_SIMD_FLAGS} ${TINYUSDZ_PATH_STRIP_FLAGS}")
+      set(CMAKE_C_FLAGS_DEBUG "-g -gsource-map -sMEMORY64 ${TINYUSDZ_SIMD_FLAGS} ${TINYUSDZ_PATH_STRIP_FLAGS}")
     else()
-      set(CMAKE_CXX_FLAGS_DEBUG "-g -gsource-map ${TINYUSDZ_SIMD_FLAGS}")
-      set(CMAKE_C_FLAGS_DEBUG "-g -gsource-map ${TINYUSDZ_SIMD_FLAGS}")
+      set(CMAKE_CXX_FLAGS_DEBUG "-g -gsource-map ${TINYUSDZ_SIMD_FLAGS} ${TINYUSDZ_PATH_STRIP_FLAGS}")
+      set(CMAKE_C_FLAGS_DEBUG "-g -gsource-map ${TINYUSDZ_SIMD_FLAGS} ${TINYUSDZ_PATH_STRIP_FLAGS}")
     endif()
   else()
     # Standard debug mode
     if (TINYUSDZ_WASM64)
-      set(CMAKE_CXX_FLAGS_DEBUG "-g4 -sMEMORY64 ${TINYUSDZ_SIMD_FLAGS}")
-      set(CMAKE_C_FLAGS_DEBUG "-g4 -sMEMORY64 ${TINYUSDZ_SIMD_FLAGS}")
+      set(CMAKE_CXX_FLAGS_DEBUG "-g4 -sMEMORY64 ${TINYUSDZ_SIMD_FLAGS} ${TINYUSDZ_PATH_STRIP_FLAGS}")
+      set(CMAKE_C_FLAGS_DEBUG "-g4 -sMEMORY64 ${TINYUSDZ_SIMD_FLAGS} ${TINYUSDZ_PATH_STRIP_FLAGS}")
     else()
-      set(CMAKE_CXX_FLAGS_DEBUG "-g4 ${TINYUSDZ_SIMD_FLAGS}")
-      set(CMAKE_C_FLAGS_DEBUG "-g4 ${TINYUSDZ_SIMD_FLAGS}")
+      set(CMAKE_CXX_FLAGS_DEBUG "-g4 ${TINYUSDZ_SIMD_FLAGS} ${TINYUSDZ_PATH_STRIP_FLAGS}")
+      set(CMAKE_C_FLAGS_DEBUG "-g4 ${TINYUSDZ_SIMD_FLAGS} ${TINYUSDZ_PATH_STRIP_FLAGS}")
     endif()
   endif()
 
@@ -66,21 +78,21 @@ elseif (CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
 
   # Use Oz to reduce size further than Os
   if (TINYUSDZ_WASM64)
-    set(CMAKE_CXX_FLAGS_MINSIZEREL "-O3 -Oz -DNDEBUG -sMEMORY64 ${TINYUSDZ_SIMD_FLAGS}")
-    set(CMAKE_C_FLAGS_MINSIZEREL "-O3 -Oz -DNDEBUG -sMEMORY64 ${TINYUSDZ_SIMD_FLAGS}")
+    set(CMAKE_CXX_FLAGS_MINSIZEREL "-O3 -Oz -DNDEBUG -sMEMORY64 ${TINYUSDZ_SIMD_FLAGS} ${TINYUSDZ_PATH_STRIP_FLAGS}")
+    set(CMAKE_C_FLAGS_MINSIZEREL "-O3 -Oz -DNDEBUG -sMEMORY64 ${TINYUSDZ_SIMD_FLAGS} ${TINYUSDZ_PATH_STRIP_FLAGS}")
   else()
-    set(CMAKE_CXX_FLAGS_MINSIZEREL "-O3 -Oz -DNDEBUG ${TINYUSDZ_SIMD_FLAGS}")
-    set(CMAKE_C_FLAGS_MINSIZEREL "-O3 -Oz -DNDEBUG ${TINYUSDZ_SIMD_FLAGS}")
+    set(CMAKE_CXX_FLAGS_MINSIZEREL "-O3 -Oz -DNDEBUG ${TINYUSDZ_SIMD_FLAGS} ${TINYUSDZ_PATH_STRIP_FLAGS}")
+    set(CMAKE_C_FLAGS_MINSIZEREL "-O3 -Oz -DNDEBUG ${TINYUSDZ_SIMD_FLAGS} ${TINYUSDZ_PATH_STRIP_FLAGS}")
   endif()
 
 else()
   # Release mode (default)
   if (TINYUSDZ_WASM64)
-    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -sMEMORY64 ${TINYUSDZ_SIMD_FLAGS}")
-    set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG -sMEMORY64 ${TINYUSDZ_SIMD_FLAGS}")
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -sMEMORY64 ${TINYUSDZ_SIMD_FLAGS} ${TINYUSDZ_PATH_STRIP_FLAGS}")
+    set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG -sMEMORY64 ${TINYUSDZ_SIMD_FLAGS} ${TINYUSDZ_PATH_STRIP_FLAGS}")
   else()
-    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG ${TINYUSDZ_SIMD_FLAGS}")
-    set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG ${TINYUSDZ_SIMD_FLAGS}")
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG ${TINYUSDZ_SIMD_FLAGS} ${TINYUSDZ_PATH_STRIP_FLAGS}")
+    set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG ${TINYUSDZ_SIMD_FLAGS} ${TINYUSDZ_PATH_STRIP_FLAGS}")
   endif()
 endif()
 

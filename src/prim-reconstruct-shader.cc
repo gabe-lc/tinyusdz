@@ -501,7 +501,7 @@ bool ReconstructShader<MtlxAutodeskStandardSurface>(
                          surface->subsurface)
     PARSE_TYPED_ATTRIBUTE(table, prop, "inputs:subsurface_color", MtlxAutodeskStandardSurface,
                          surface->subsurface_color)
-    PARSE_TYPED_ATTRIBUTE(table, prop, "inputs:subsurface_radius", MtlxAutodeskStandardSurface,
+    PARSE_FLOAT_OR_COLOR3_ATTRIBUTE(table, prop, "inputs:subsurface_radius", MtlxAutodeskStandardSurface,
                          surface->subsurface_radius)
     PARSE_TYPED_ATTRIBUTE(table, prop, "inputs:subsurface_scale", MtlxAutodeskStandardSurface,
                          surface->subsurface_scale)
@@ -634,7 +634,7 @@ bool ReconstructShader<MtlxOpenPBRSurface>(
                          surface->subsurface_weight)
     PARSE_TYPED_ATTRIBUTE(table, prop, "inputs:subsurface_color", MtlxOpenPBRSurface,
                          surface->subsurface_color)
-    PARSE_TYPED_ATTRIBUTE(table, prop, "inputs:subsurface_radius", MtlxOpenPBRSurface,
+    PARSE_FLOAT_OR_COLOR3_ATTRIBUTE(table, prop, "inputs:subsurface_radius", MtlxOpenPBRSurface,
                          surface->subsurface_radius)
     PARSE_TYPED_ATTRIBUTE(table, prop, "inputs:subsurface_radius_scale", MtlxOpenPBRSurface,
                          surface->subsurface_radius_scale)
@@ -785,7 +785,7 @@ bool ReconstructShader<OpenPBRSurface>(
                          surface->subsurface_weight)
     PARSE_TYPED_ATTRIBUTE(table, prop, "inputs:subsurface_color", OpenPBRSurface,
                          surface->subsurface_color)
-    PARSE_TYPED_ATTRIBUTE(table, prop, "inputs:subsurface_radius", OpenPBRSurface,
+    PARSE_FLOAT_OR_COLOR3_ATTRIBUTE(table, prop, "inputs:subsurface_radius", OpenPBRSurface,
                          surface->subsurface_radius)
     PARSE_TYPED_ATTRIBUTE(table, prop, "inputs:subsurface_scale", OpenPBRSurface,
                          surface->subsurface_scale)

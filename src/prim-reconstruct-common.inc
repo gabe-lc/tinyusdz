@@ -454,6 +454,76 @@ static ParseResult ParseTypedAttribute(std::set<std::string> &table, /* inout */
 }
 
 
+// Lenient parse for a float-typed shader input that may also appear as
+// `color3f` in MaterialX-spec-compliant files (e.g. `inputs:subsurface_radius`,
+// which MaterialX defines as color3 but Blender/tinyusdz declare as float).
+// First tries the strict float path; on TypeMismatch with color3f, reads the
+// color3f value, broadcasts to a scalar (channel average), and writes the float.
+static ParseResult ParseFloatAttributeAcceptingColor3(
+    std::set<std::string> &table,
+    const std::string prop_name,
+    Property &prop,
+    const std::string &name,
+    TypedAttributeWithFallback<Animatable<float>> &target)
+{
+  ParseResult ret = ParseTypedAttributeUnified(table, prop_name, prop, name, target);
+  if (ret.code != ParseResult::ResultCode::TypeMismatch) {
+    return ret;
+  }
+
+  if (!prop.is_attribute()) {
+    return ret;
+  }
+
+  Attribute &attr = prop.attribute();
+  const std::string attr_type_name = attr.type_name();
+  if (attr_type_name != value::TypeTraits<value::color3f>::type_name() &&
+      attr_type_name != value::TypeTraits<value::color3f>::underlying_type_name()) {
+    return ret;
+  }
+
+  Animatable<float> animatable;
+  bool has_data = false;
+
+  if (attr.get_var().has_default()) {
+    if (auto pv = attr.get_var().get_value<value::color3f>()) {
+      const value::color3f &c = pv.value();
+      animatable.set((c.r + c.g + c.b) / 3.0f);
+      has_data = true;
+    }
+  }
+
+  const bool has_timesamples_unconverted = attr.get_var().has_timesamples();
+
+  if (!has_data && !attr.has_connections() && !has_timesamples_unconverted) {
+    return ret;
+  }
+
+  if (attr.has_connections()) {
+    target.set_connections(attr.connections());
+  }
+  if (has_data) {
+    target.set_value(std::move(animatable));
+  }
+  target.metas() = std::move(prop.attribute().metas());
+  table.insert(name);
+
+  ret.code = ParseResult::ResultCode::Success;
+  ret.err.clear();
+  if (has_timesamples_unconverted) {
+    ret.warn = fmt::format(
+        "Attribute `{}` declared as `color3f` (MaterialX spec) with timeSamples; "
+        "only default value preserved as float (channel average).",
+        name);
+  } else {
+    ret.warn = fmt::format(
+        "Attribute `{}` declared as `color3f` (MaterialX spec); stored as float "
+        "(channel average) since tinyusdz declares it as `float`.",
+        name);
+  }
+  return ret;
+}
+
 // Special case for Extent(float3[2]) type.
 // TODO: Reuse code of ParseTypedAttribute as much as possible
 static ParseResult ParseExtentAttribute(std::set<std::string> &table, /* inout */
@@ -792,6 +862,20 @@ static ParseResult ParseShaderInputConnectionProperty(std::set<std::string> &tab
 
 #define PARSE_TYPED_ATTRIBUTE(__table, __prop, __name, __klass, __target) { \
   ParseResult ret = ParseTypedAttribute(__table, __prop.first, __prop.second, __name, __target); \
+  if (ret.code == ParseResult::ResultCode::Success || ret.code == ParseResult::ResultCode::AlreadyProcessed) { \
+    if (!ret.warn.empty()) { \
+      PUSH_WARN(ret.warn); \
+    } \
+    continue; /* got it */\
+  } else if (ret.code == ParseResult::ResultCode::Unmatched) { \
+    /* go next */ \
+  } else { \
+    PUSH_ERROR_AND_RETURN(fmt::format("Parsing attribute `{}` failed. Error: {}", __name, ret.err)); \
+  } \
+}
+
+#define PARSE_FLOAT_OR_COLOR3_ATTRIBUTE(__table, __prop, __name, __klass, __target) { \
+  ParseResult ret = ParseFloatAttributeAcceptingColor3(__table, __prop.first, __prop.second, __name, __target); \
   if (ret.code == ParseResult::ResultCode::Success || ret.code == ParseResult::ResultCode::AlreadyProcessed) { \
     if (!ret.warn.empty()) { \
       PUSH_WARN(ret.warn); \
