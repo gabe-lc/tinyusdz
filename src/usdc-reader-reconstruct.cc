@@ -1174,7 +1174,19 @@ bool USDCReader::Impl::ReconstructPrimSpecRecursively(
   }
 
   PrimSpec *currPrimSpecPtr = nullptr;
-  PrimSpec *primspecPtr{nullptr};
+
+  // PrimSpec staging: ReconstructPrimSpecNode writes into a local PrimSpec
+  // when the current node is a SpecType::Prim. Previously this was called
+  // with a null `PrimSpec*` and the result was discarded, leaving the Layer
+  // empty for any USDC loaded via LoadLayerFromMemory. The fix:
+  //   1. Pass a real PrimSpec by-pointer so the node fields get populated.
+  //   2. After the call, if the staged primspec was filled (name non-empty),
+  //      insert it into the right destination: the Layer's root primspecs
+  //      map when there's no parent PrimSpec, or the parent's children
+  //      vector otherwise. `currPrimSpecPtr` then points at the inserted
+  //      instance so children recurse against the right node.
+  PrimSpec stagedPrimSpec;
+  PrimSpec *primspecPtr = &stagedPrimSpec;
 
   bool is_parent_variant = _variantPrims.count(parent);
 
@@ -1183,8 +1195,15 @@ bool USDCReader::Impl::ReconstructPrimSpecRecursively(
     return false;
   }
 
-  if (primspecPtr) {
-    currPrimSpecPtr = primspecPtr;
+  if (!stagedPrimSpec.name().empty()) {
+    if (parentPrimSpec) {
+      parentPrimSpec->children().push_back(std::move(stagedPrimSpec));
+      currPrimSpecPtr = &parentPrimSpec->children().back();
+    } else {
+      const std::string primName = stagedPrimSpec.name();
+      layer->primspecs()[primName] = std::move(stagedPrimSpec);
+      currPrimSpecPtr = &layer->primspecs()[primName];
+    }
   }
 
   {

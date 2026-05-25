@@ -1285,12 +1285,186 @@ class TinyUSDZLoaderNative {
     options.mmap_zero_copy = mmap_zero_copy_;
 
     tinyusdz::Stage stage;
-    loaded_ = tinyusdz::LoadUSDFromMemory(
-        reinterpret_cast<const uint8_t *>(binary.c_str()), binary.size(),
-        filename, &stage, &warn_, &error_, options);
 
-    if (!loaded_) {
-      return false;
+    if (is_usdz) {
+      // ---------------------------------------------------------------------
+      // USDZ path. Only enter the layer+composition flow when the top-level
+      // USD actually has unresolved composition arcs (references, payload,
+      // inherits, variantSets) that target sibling files in the archive —
+      // i.e. assembly-style USDZs. For "flat" USDZs (single USD + textures,
+      // no internal references) we fall through to `LoadUSDFromMemory`
+      // because the direct-to-Stage path handles UsdSkel + animation prims
+      // more reliably than `LoadLayerFromMemory` + `LayerToStage` (the
+      // latter regresses rigged-mesh USDZ loads).
+
+      std::cout << "[tusd:loadFromBinary] USDZ detected, probing for composition arcs\n";
+
+      tinyusdz::Layer root_layer;
+      bool layer_loaded = tinyusdz::LoadLayerFromMemory(
+          reinterpret_cast<const uint8_t *>(binary.c_str()), binary.size(),
+          filename, &root_layer, &warn_, &error_, options);
+
+      std::cout << "[tusd:loadFromBinary] LoadLayerFromMemory returned "
+                << (layer_loaded ? "true" : "false") << "\n";
+
+      bool has_refs = layer_loaded && root_layer.check_unresolved_references();
+      bool has_payload = layer_loaded && root_layer.check_unresolved_payload();
+      bool has_inherits = layer_loaded && root_layer.check_unresolved_inherits();
+      bool has_variants = layer_loaded && root_layer.check_unresolved_variant();
+      std::cout << "[tusd:loadFromBinary] arcs: refs=" << has_refs
+                << " payload=" << has_payload
+                << " inherits=" << has_inherits
+                << " variants=" << has_variants << "\n";
+
+      bool needs_composition =
+          has_refs || has_payload || has_inherits || has_variants;
+
+      if (needs_composition) {
+        // Set up the in-USDZ asset resolver so `@./*.usdc@` references
+        // resolve to sibling files in the archive (not the host filesystem).
+        // `usdz_asset_` is a class member: its address must remain valid
+        // until any resolver derived from it is no longer in use.
+        bool asset_on_memory =
+            false;  // false = zero-copy; binary buffer must outlive use.
+        if (!tinyusdz::ReadUSDZAssetInfoFromMemory(
+                reinterpret_cast<const uint8_t *>(binary.c_str()),
+                binary.size(), asset_on_memory, &usdz_asset_, &warn_,
+                &error_)) {
+          std::cerr << "[tusd:loadFromBinary] Failed to read USDZ asset info.\n";
+          loaded_ = false;
+          return false;
+        }
+
+        tinyusdz::AssetResolutionResolver resolver;
+        if (!tinyusdz::SetupUSDZAssetResolution(resolver, &usdz_asset_)) {
+          std::cerr
+              << "[tusd:loadFromBinary] Failed to setup USDZ asset resolver.\n";
+          loaded_ = false;
+          return false;
+        }
+
+        CompositionFeatures comp_features;
+        tinyusdz::Layer src_layer = std::move(root_layer);
+
+        if (comp_features.subLayers) {
+          tinyusdz::Layer composited;
+          if (!tinyusdz::CompositeSublayers(resolver, src_layer, &composited,
+                                            &warn_, &error_)) {
+            loaded_ = false;
+            return false;
+          }
+          src_layer = std::move(composited);
+        }
+
+        constexpr int kMaxIteration = 32;
+        int final_iter = 0;
+        for (int i = 0; i < kMaxIteration; i++) {
+          final_iter = i;
+          bool has_unresolved = false;
+          std::cout << "[tusd:loadFromBinary] composition iter " << i
+                    << " starting\n";
+
+          if (comp_features.references &&
+              src_layer.check_unresolved_references()) {
+            has_unresolved = true;
+            std::cout << "[tusd:loadFromBinary]   CompositeReferences begin\n";
+            tinyusdz::Layer composited;
+            if (!tinyusdz::CompositeReferences(resolver, src_layer, &composited,
+                                               &warn_, &error_)) {
+              std::cerr << "[tusd:loadFromBinary]   CompositeReferences failed: "
+                        << error_ << "\n";
+              loaded_ = false;
+              return false;
+            }
+            std::cout << "[tusd:loadFromBinary]   CompositeReferences ok\n";
+            src_layer = std::move(composited);
+          }
+
+          if (comp_features.payload && src_layer.check_unresolved_payload()) {
+            has_unresolved = true;
+            std::cout << "[tusd:loadFromBinary]   CompositePayload begin\n";
+            tinyusdz::Layer composited;
+            if (!tinyusdz::CompositePayload(resolver, src_layer, &composited,
+                                            &warn_, &error_)) {
+              std::cerr << "[tusd:loadFromBinary]   CompositePayload failed: "
+                        << error_ << "\n";
+              loaded_ = false;
+              return false;
+            }
+            std::cout << "[tusd:loadFromBinary]   CompositePayload ok\n";
+            src_layer = std::move(composited);
+          }
+
+          if (comp_features.inherits && src_layer.check_unresolved_inherits()) {
+            has_unresolved = true;
+            std::cout << "[tusd:loadFromBinary]   CompositeInherits begin\n";
+            tinyusdz::Layer composited;
+            if (!tinyusdz::CompositeInherits(src_layer, &composited, &warn_,
+                                             &error_)) {
+              std::cerr << "[tusd:loadFromBinary]   CompositeInherits failed: "
+                        << error_ << "\n";
+              loaded_ = false;
+              return false;
+            }
+            std::cout << "[tusd:loadFromBinary]   CompositeInherits ok\n";
+            src_layer = std::move(composited);
+          }
+
+          if (comp_features.variantSets &&
+              src_layer.check_unresolved_variant()) {
+            has_unresolved = true;
+            std::cout << "[tusd:loadFromBinary]   CompositeVariant begin\n";
+            tinyusdz::Layer composited;
+            if (!tinyusdz::CompositeVariant(src_layer, &composited, &warn_,
+                                            &error_)) {
+              std::cerr << "[tusd:loadFromBinary]   CompositeVariant failed: "
+                        << error_ << "\n";
+              loaded_ = false;
+              return false;
+            }
+            std::cout << "[tusd:loadFromBinary]   CompositeVariant ok\n";
+            src_layer = std::move(composited);
+          }
+
+          if (!has_unresolved) {
+            std::cout << "[tusd:loadFromBinary] composition converged at iter "
+                      << i << "\n";
+            break;
+          }
+        }
+        if (final_iter == kMaxIteration - 1) {
+          std::cout << "[tusd:loadFromBinary] hit max iteration cap ("
+                    << kMaxIteration << ")\n";
+        }
+
+        std::cout << "[tusd:loadFromBinary] LayerToStage begin\n";
+        if (!tinyusdz::LayerToStage(std::move(src_layer), &stage, &warn_,
+                                    &error_)) {
+          std::cerr << "[tusd:loadFromBinary] LayerToStage failed: " << error_
+                    << "\n";
+          loaded_ = false;
+          return false;
+        }
+        std::cout << "[tusd:loadFromBinary] LayerToStage ok\n";
+        loaded_ = true;
+      } else {
+        // Flat USDZ — use the direct Stage path which handles UsdSkel
+        // + animation prims reliably.
+        loaded_ = tinyusdz::LoadUSDFromMemory(
+            reinterpret_cast<const uint8_t *>(binary.c_str()), binary.size(),
+            filename, &stage, &warn_, &error_, options);
+        if (!loaded_) {
+          return false;
+        }
+      }
+    } else {
+      loaded_ = tinyusdz::LoadUSDFromMemory(
+          reinterpret_cast<const uint8_t *>(binary.c_str()), binary.size(),
+          filename, &stage, &warn_, &error_, options);
+
+      if (!loaded_) {
+        return false;
+      }
     }
 
     loaded_as_layer_ = false;

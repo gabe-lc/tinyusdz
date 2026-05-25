@@ -660,62 +660,38 @@ static ParseResult ParseShaderOutputTerminalAttribute(std::set<std::string> &tab
       DCOUT("attr-type_name = " << attr_type_name);
 
 
-      // First check if both types are same, then
-      // Allow either type is role-types(e.g. allow color3f attribute for TypedTerminalAttribute<float3>)
-      // TODO: Allow both role-types case?(e.g. point3f attribute for TypedTerminalAttribute<vector3f>)
-      if (value::TypeTraits<T>::type_name() == attr_type_name) {
-        DCOUT("Author output terminal attribute: " << name);
-        target.set_authored(true);
-        target.metas() = prop.get_attribute().metas();
-        table.insert(name);
-        ret.code = ParseResult::ResultCode::Success;
-        return ret;
-      } else if (value::TypeTraits<T>::is_role_type()) {
-        if (attr_is_role_type) {
-          ret.code = ParseResult::ResultCode::TypeMismatch;
-          ret.err = fmt::format("Attribute type mismatch. {} expects type `{}` but defined as type `{}`.", name, value::TypeTraits<T>::type_name(), attr_type_name);
-          return ret;
-        } else {
-          if (value::TypeTraits<T>::underlying_type_name() == attr_type_name) {
-            target.set_authored(true);
-            target.set_actual_type_name(attr_type_name);
-            target.metas() = prop.get_attribute().metas();
-            table.insert(name);
-            ret.code = ParseResult::ResultCode::Success;
-            return ret;
-          } else {
-            ret.code = ParseResult::ResultCode::TypeMismatch;
-            ret.err = fmt::format("Attribute type mismatch. {} expects type `{}`(and its underlying types) but defined as type `{}`.", name, value::TypeTraits<T>::type_name(), attr_type_name);
-            return ret;
-          }
-        }
-      } else if (attr_is_role_type) {
-        if (value::TypeTraits<T>::is_role_type()) {
-          ret.code = ParseResult::ResultCode::TypeMismatch;
-          ret.err = fmt::format("Attribute type mismatch. {} expects type `{}` but defined as type `{}`.", name, value::TypeTraits<T>::type_name(), attr_type_name);
-          return ret;
-        } else {
+      // Shader output terminal attributes carry no value (the EmptyAttrib
+      // check above guarantees it). Some authoring tools (notably Unreal
+      // Engine's USD export) declare the port type as `token` regardless
+      // of the canonical shader output type (`float2`, `float4`, etc.).
+      // Since there is no value to read or convert, accept any declared
+      // type with a warning instead of failing the entire load.
+      const bool exact_match = (value::TypeTraits<T>::type_name() == attr_type_name);
+      bool role_underlying_match = false;
+      if (!exact_match) {
+        if (value::TypeTraits<T>::is_role_type() && !attr_is_role_type) {
+          role_underlying_match = (value::TypeTraits<T>::underlying_type_name() == attr_type_name);
+        } else if (!value::TypeTraits<T>::is_role_type() && attr_is_role_type) {
           uint32_t attr_underlying_type_id = value::GetUnderlyingTypeId(attr_type_name);
-          if (value::TypeTraits<T>::type_id() == attr_underlying_type_id) {
-            target.set_authored(true);
-            target.set_actual_type_name(attr_type_name);
-            target.metas() = prop.get_attribute().metas();
-            table.insert(name);
-            ret.code = ParseResult::ResultCode::Success;
-            return ret;
-          } else {
-            ret.code = ParseResult::ResultCode::TypeMismatch;
-            ret.err = fmt::format("Attribute type mismatch. {} expects type `{}` but defined as type `{}`(and its underlying types).", name, value::TypeTraits<T>::type_name(), attr_type_name);
-            return ret;
-          }
+          role_underlying_match = (value::TypeTraits<T>::type_id() == attr_underlying_type_id);
         }
-
-      } else {
-        DCOUT("attr.type = " << attr_type_name);
-        ret.code = ParseResult::ResultCode::TypeMismatch;
-        ret.err = fmt::format("Property type mismatch. {} expects type `{}` but defined as type `{}`.", name, value::TypeTraits<T>::type_name(), attr_type_name);
-        return ret;
       }
+
+      DCOUT("Author output terminal attribute: " << name);
+      target.set_authored(true);
+      if (!exact_match) {
+        target.set_actual_type_name(attr_type_name);
+      }
+      target.metas() = prop.get_attribute().metas();
+      table.insert(name);
+      ret.code = ParseResult::ResultCode::Success;
+      if (!exact_match && !role_underlying_match) {
+        ret.warn = fmt::format(
+            "Shader output terminal `{}` declared as type `{}` but tinyusdz expects `{}`. "
+            "Accepted leniently (output ports carry no value).",
+            name, attr_type_name, value::TypeTraits<T>::type_name());
+      }
+      return ret;
     }
   }
 
@@ -833,6 +809,9 @@ static ParseResult ParseShaderInputConnectionProperty(std::set<std::string> &tab
 #define PARSE_SHADER_TERMINAL_ATTRIBUTE(__table, __prop, __name, __klass, __target) { \
   ParseResult ret = ParseShaderOutputTerminalAttribute(__table, __prop.first, __prop.second, __name, __target); \
   if (ret.code == ParseResult::ResultCode::Success || ret.code == ParseResult::ResultCode::AlreadyProcessed) { \
+    if (!ret.warn.empty()) { \
+      PUSH_WARN(ret.warn); \
+    } \
     DCOUT("Added shader terminal attribute: " << __name); \
     continue; /* got it */\
   } else if (ret.code == ParseResult::ResultCode::Unmatched) { \

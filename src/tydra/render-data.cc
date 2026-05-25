@@ -33,6 +33,7 @@
 #include "tiny-format.hh"
 #include "tinyusdz.hh"
 #include "usdGeom.hh"
+#include "xform.hh"
 #include "usdShade.hh"
 #include "usdLux.hh"
 #include "usdMtlx.hh"
@@ -646,6 +647,249 @@ bool RenderSceneConverter::GetBoundMaterialCached(
   return found;
 }
 
+namespace {
+
+// Build a TRS local transform matrix for a single PointInstancer instance.
+// Composition follows tinyusdz row-major convention (point * M):
+//   p_local = p_mesh * (S * R * T)
+// so the resulting matrix transforms a mesh-space point through scale, then
+// rotation around origin, then translation to the instance position.
+static value::matrix4d BuildInstanceLocalMatrix(
+    const value::point3f &position,
+    const value::quath *orientation,    // nullable
+    const value::float3 *scale) {       // nullable
+  value::matrix4d S = value::matrix4d::identity();
+  if (scale) {
+    S.m[0][0] = (*scale)[0];
+    S.m[1][1] = (*scale)[1];
+    S.m[2][2] = (*scale)[2];
+  }
+  value::matrix4d R = orientation ? to_matrix(*orientation)
+                                  : value::matrix4d::identity();
+  value::matrix4d T = value::matrix4d::identity();
+  T.m[3][0] = position[0];
+  T.m[3][1] = position[1];
+  T.m[3][2] = position[2];
+  return S * R * T;
+}
+
+// Recursively recompute global_matrix from local_matrix using parent_world
+// as the inherited transform. Mirrors `node.world = parent.world * node.local`.
+static void RecomputeGlobalsRec(Node *n, const value::matrix4d &parent_world) {
+  n->global_matrix = parent_world * n->local_matrix;
+  for (auto &child : n->children) {
+    RecomputeGlobalsRec(&child, n->global_matrix);
+  }
+}
+
+// Collect all descendant Nodes into a path-keyed map. Used to look up a
+// prototype Node by its absolute USD path when expanding a PointInstancer
+// (the PointInstancer's `prototypes` relationship targets these paths).
+static void CollectDescendantsByPath(const Node &n,
+                                     std::map<std::string, const Node*> &out) {
+  out[n.abs_path] = &n;
+  for (const auto &c : n.children) {
+    CollectDescendantsByPath(c, out);
+  }
+}
+
+// Extract instance attribute defaults from a PointInstancer.
+// Returns false only on fatal cast failures; missing attributes leave the
+// out-vectors empty (caller treats that as "skip this PI").
+static void ReadPointInstancerArrays(
+    const GeomPointInstancer &pi,
+    std::vector<int32_t> &protoIndices,
+    std::vector<value::point3f> &positions,
+    std::vector<value::quath> &orientations,
+    std::vector<value::float3> &scales) {
+  if (pi.protoIndices.authored()) {
+    if (auto opt = pi.protoIndices.get_value()) {
+      if (opt.value().has_default()) {
+        opt.value().get_default(&protoIndices);
+      }
+    }
+  }
+  if (pi.positions.authored()) {
+    if (auto opt = pi.positions.get_value()) {
+      if (opt.value().has_default()) {
+        opt.value().get_default(&positions);
+      }
+    }
+  }
+  if (pi.orientations.authored()) {
+    if (auto opt = pi.orientations.get_value()) {
+      if (opt.value().has_default()) {
+        opt.value().get_default(&orientations);
+      }
+    }
+  }
+  if (pi.scales.authored()) {
+    if (auto opt = pi.scales.get_value()) {
+      if (opt.value().has_default()) {
+        opt.value().get_default(&scales);
+      }
+    }
+  }
+}
+
+// Expand PointInstancers into per-instance Node clones. For each PointInstancer
+// Node found in the tree, this:
+//   1. Reads its per-instance arrays (positions, orientations, scales, protoIndices)
+//      and resolves the `prototypes` relationship to a list of prototype paths.
+//   2. Locates each prototype Node among the PI's descendants (Unreal-exported
+//      USDZ places them under a `Prototypes/` Scope child of the PI).
+//   3. For each instance, deep-copies the prototype Node subtree, prepends the
+//      instance's TRS transform onto its local_matrix, gives it a unique
+//      abs_path, and recomputes its subtree's global_matrix values.
+//   4. Replaces the PI Node's children with the new instance clones, so the
+//      original Prototypes subtree no longer renders at default positions.
+//
+// Returns the number of PointInstancers successfully expanded (for logging).
+// Errors are pushed via the converter's error stream, never aborts the load.
+static size_t ExpandPointInstancersInTree(
+    std::vector<Node> &nodes,
+    const PathPrimMap<GeomPointInstancer> &piMap,
+    std::string *warn) {
+  if (piMap.empty()) {
+    return 0;
+  }
+
+  size_t expanded_count = 0;
+
+  std::function<void(Node*, const value::matrix4d&)> visit;
+  visit = [&](Node *n, const value::matrix4d &parent_world) {
+    const value::matrix4d node_world = parent_world * n->local_matrix;
+
+    auto it = piMap.find(n->abs_path);
+    if (it != piMap.end()) {
+      const GeomPointInstancer *pi = it->second;
+      if (!pi) {
+        return;
+      }
+
+      std::vector<int32_t> protoIndices;
+      std::vector<value::point3f> positions;
+      std::vector<value::quath> orientations;
+      std::vector<value::float3> scales;
+      ReadPointInstancerArrays(*pi, protoIndices, positions,
+                               orientations, scales);
+
+      std::vector<std::string> prototype_paths;
+      if (pi->prototypes.has_value()) {
+        const Relationship &rel = pi->prototypes.value();
+        if (rel.is_path()) {
+          prototype_paths.push_back(rel.targetPath.full_path_name());
+        } else if (rel.is_pathvector()) {
+          for (const auto &p : rel.targetPathVector) {
+            prototype_paths.push_back(p.full_path_name());
+          }
+        }
+      }
+
+      if (protoIndices.empty() || positions.empty() ||
+          prototype_paths.empty()) {
+        // Not enough data to expand. Still clear children so the prototype
+        // template subtree doesn't render at default position.
+        if (warn) {
+          *warn += fmt::format(
+              "PointInstancer `{}` skipped: missing protoIndices, positions, "
+              "or prototypes relationship.\n", n->abs_path);
+        }
+        n->children.clear();
+        return;
+      }
+
+      // Index prototype Nodes by their USD path. Prototypes typically live
+      // under a `Prototypes/` Scope child of the PointInstancer.
+      std::map<std::string, const Node*> protoByPath;
+      for (const auto &c : n->children) {
+        CollectDescendantsByPath(c, protoByPath);
+      }
+
+      // Pair up parallel arrays. Missing orientation/scale defaults to identity.
+      const size_t N = (std::min)(positions.size(), protoIndices.size());
+
+      std::vector<Node> new_children;
+      new_children.reserve(N);
+
+      for (size_t i = 0; i < N; ++i) {
+        int32_t proto_idx = protoIndices[i];
+        if (proto_idx < 0 ||
+            size_t(proto_idx) >= prototype_paths.size()) {
+          continue;
+        }
+
+        const std::string &proto_path = prototype_paths[size_t(proto_idx)];
+        auto pit = protoByPath.find(proto_path);
+        if (pit == protoByPath.end()) {
+          // Prototype not under this PI's subtree (uncommon — Unreal always
+          // nests under Prototypes/). Could resolve via the global node tree
+          // in a future enhancement.
+          if (warn) {
+            *warn += fmt::format(
+                "PointInstancer `{}` instance {}: prototype `{}` not found "
+                "under this PI subtree; skipped.\n",
+                n->abs_path, i, proto_path);
+          }
+          continue;
+        }
+
+        const value::quath *orient_ptr =
+            (i < orientations.size()) ? &orientations[i] : nullptr;
+        const value::float3 *scale_ptr =
+            (i < scales.size()) ? &scales[i] : nullptr;
+        const value::matrix4d instance_local =
+            BuildInstanceLocalMatrix(positions[i], orient_ptr, scale_ptr);
+
+        Node clone = *pit->second;  // deep-copies the subtree
+
+        // Compose: clone.local = prototype.local * instance_local.
+        // Result: world = PI_parent.world * (PI.local) * prototype.local * instance_local.
+        // For Unreal exports, PI.local is identity, so this places the instance
+        // at PI_parent's world * instance_local — i.e. the prototype's mesh-
+        // space points end up at the right world position.
+        clone.local_matrix = pit->second->local_matrix * instance_local;
+
+        // Make abs_path unique so downstream code that path-keys nodes (e.g.
+        // animation channel target lookup) doesn't see duplicates. Suffix is
+        // bracketed to be readable in debug dumps.
+        clone.abs_path = pit->second->abs_path + "[pi" + std::to_string(i) + "]";
+        clone.prim_name = pit->second->prim_name + "_inst" + std::to_string(i);
+
+        new_children.push_back(std::move(clone));
+      }
+
+      // Replace the PI's children: drop the original Prototypes subtree,
+      // install the per-instance clones in its place. The PI Node itself
+      // remains (as a no-op Xform parent), preserving any sibling indexing.
+      n->children = std::move(new_children);
+
+      // Refresh global_matrix on the new subtree. PI's own global_matrix
+      // is unchanged (it's still parent.world * PI.local), so use it as
+      // the parent_world for the new children.
+      for (auto &c : n->children) {
+        RecomputeGlobalsRec(&c, n->global_matrix);
+      }
+
+      ++expanded_count;
+      return;  // don't recurse into the just-expanded subtree
+    }
+
+    for (auto &c : n->children) {
+      visit(&c, node_world);
+    }
+  };
+
+  const value::matrix4d identity = value::matrix4d::identity();
+  for (auto &root : nodes) {
+    visit(&root, identity);
+  }
+
+  return expanded_count;
+}
+
+}  // namespace
+
 bool RenderSceneConverter::ConvertToRenderScene(
     const RenderSceneConverterEnv &env, RenderScene *scene) {
   if (!scene) {
@@ -680,6 +924,7 @@ bool RenderSceneConverter::ConvertToRenderScene(
   PathPrimMap<Skeleton> allSkeletons;
   PathPrimMap<SkelRoot> allSkelRoots;
   PathPrimMap<SkelAnimation> allAnimations;
+  PathPrimMap<GeomPointInstancer> pointInstancerPrimMap;
 
   {
     // Iterative stack-based traversal visiting each prim exactly once
@@ -715,6 +960,9 @@ bool RenderSceneConverter::ConvertToRenderScene(
           break;
         case value::TYPE_ID_SKELANIMATION:
           if (const auto *p = prim.as<SkelAnimation>()) allAnimations[path_buf] = p;
+          break;
+        case value::TYPE_ID_GEOM_POINT_INSTANCER:
+          if (const auto *p = prim.as<GeomPointInstancer>()) pointInstancerPrimMap[path_buf] = p;
           break;
         default:
           break;
@@ -923,6 +1171,20 @@ bool RenderSceneConverter::ConvertToRenderScene(
 
   if (!BuildNodeHierarchy(env, xform_node)) {
     return false;
+  }
+
+  // Expand PointInstancers into per-instance Node clones. Operates on the
+  // already-built node tree; reuses existing RenderMesh data (instances share
+  // mesh indices), so memory cost scales with instance count of Nodes only.
+  if (!pointInstancerPrimMap.empty()) {
+    std::string pi_warn;
+    size_t expanded = ExpandPointInstancersInTree(root_nodes, pointInstancerPrimMap,
+                                                  &pi_warn);
+    if (!pi_warn.empty()) {
+      PUSH_WARN(pi_warn);
+    }
+    DCOUT("[Tydra] Expanded " << expanded << " PointInstancers (of "
+          << pointInstancerPrimMap.size() << " discovered).");
   }
 
   // Report progress after node hierarchy building (85%)

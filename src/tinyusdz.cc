@@ -461,9 +461,26 @@ bool LoadUSDZFromMemory(const uint8_t *addr, const size_t length,
   }
 
   if ((usdc_index >= 0) && (usda_index >= 0)) {
-    if (warn) {
-      (*warn) += "Both USDA and USDC file found. Use USDC file [" +
-                 assets[size_t(usdc_index)].filename + "]\n";
+    // Per USDZ spec, the first file in the archive is the entry layer. The
+    // earlier code here unconditionally preferred USDC, which drops the
+    // top-level .usda in assembly USDZs that reference sibling .usdc files
+    // (the .usdc gets used as the root and the assembly never gets read).
+    // Honor archive ordering: whichever of usda/usdc has the lower index is
+    // the entry layer.
+    if (usda_index < usdc_index) {
+      if (warn) {
+        (*warn) +=
+            "Both USDA and USDC file found. First in archive is USDA, using [" +
+            assets[size_t(usda_index)].filename + "]\n";
+      }
+      usdc_index = -1;
+    } else {
+      if (warn) {
+        (*warn) +=
+            "Both USDA and USDC file found. First in archive is USDC, using [" +
+            assets[size_t(usdc_index)].filename + "]\n";
+      }
+      usda_index = -1;
     }
   }
 
@@ -1315,9 +1332,22 @@ bool LoadUSDZLayerFromMemory(const uint8_t *addr, const size_t length,
   }
 
   if ((usdc_index >= 0) && (usda_index >= 0)) {
-    if (warn) {
-      (*warn) += "Both USDA and USDC file found. Use USDC file [" +
-                 assets[size_t(usdc_index)].filename + "]\n";
+    // Per USDZ spec, the first file in the archive is the entry layer. See
+    // LoadUSDZFromMemory for full rationale — same bug, same fix.
+    if (usda_index < usdc_index) {
+      if (warn) {
+        (*warn) +=
+            "Both USDA and USDC file found. First in archive is USDA, using [" +
+            assets[size_t(usda_index)].filename + "]\n";
+      }
+      usdc_index = -1;
+    } else {
+      if (warn) {
+        (*warn) +=
+            "Both USDA and USDC file found. First in archive is USDC, using [" +
+            assets[size_t(usdc_index)].filename + "]\n";
+      }
+      usda_index = -1;
     }
   }
 
@@ -1708,6 +1738,18 @@ bool SetupUSDZAssetResolution(
   handler.read_fun = USDZReadAsset;
   handler.write_fun = nullptr;
   handler.userdata = reinterpret_cast<void *>(const_cast<USDZAsset *>(pusdzAsset));
+
+  // USD layers — needed so composition (`prepend references = @./*.usdc@`)
+  // can resolve sibling USD files inside the USDZ archive. The original code
+  // only registered image extensions and left this as a TODO above; without
+  // it, references silently get dropped during CompositeReferences (the
+  // resolver returns empty → composition warns + treats it as success).
+  resolver.register_asset_resolution_handler("usd", handler);
+  resolver.register_asset_resolution_handler("USD", handler);
+  resolver.register_asset_resolution_handler("usda", handler);
+  resolver.register_asset_resolution_handler("USDA", handler);
+  resolver.register_asset_resolution_handler("usdc", handler);
+  resolver.register_asset_resolution_handler("USDC", handler);
 
   resolver.register_asset_resolution_handler("png", handler);
   resolver.register_asset_resolution_handler("PNG", handler);

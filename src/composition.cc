@@ -103,8 +103,7 @@ bool ReplaceRootPrimPathRec(
 
   (void)warn;
 
-  DCOUT("srcPrefix: " << srcPrefix);
-  DCOUT("dstPrefix: " << dstPrefix);
+  std::cout << "[ReplaceRootPrimPathRec] srcPrefix='" << srcPrefix << "' dstPrefix='" << dstPrefix << "' on prim='" << ps.name() << "'\n";
 
   constexpr size_t kMaxIter = 1024 * 1024 * 128;
 
@@ -128,13 +127,28 @@ bool ReplaceRootPrimPathRec(
 
         if (rel.is_path()) {
           if (rel.targetPath.has_prefix(srcPrefix)) {
+            Path before = rel.targetPath;
             rel.targetPath.replace_prefix(srcPrefix, dstPrefix);
+            std::cout << "  rel '" << prop.first << "' on prim='" << current->name()
+                      << "': '" << before << "' -> '" << rel.targetPath << "'\n";
+          } else {
+            std::cout << "  rel '" << prop.first << "' on prim='" << current->name()
+                      << "': '" << rel.targetPath << "' no prefix match (srcPrefix='"
+                      << srcPrefix << "'), LEFT AS-IS\n";
           }
         } else if (rel.is_pathvector()) {
 
           for (auto &path : rel.targetPathVector) {
             if (path.has_prefix(srcPrefix)) {
+              Path before = path;
               path.replace_prefix(srcPrefix, dstPrefix);
+              std::cout << "  rel-vec '" << prop.first << "' on prim='"
+                        << current->name() << "': '" << before << "' -> '" << path
+                        << "'\n";
+            } else {
+              std::cout << "  rel-vec '" << prop.first << "' on prim='"
+                        << current->name() << "': '" << path
+                        << "' no prefix match, LEFT AS-IS\n";
             }
           }
         }
@@ -663,8 +677,19 @@ bool CompositeReferencesRec(uint32_t depth, AssetResolutionResolver &resolver,
             continue;
           }
 
-          // Replace prim path prefix
-          if (!ReplaceRootPrimPathRec(reference.prim_path, dst_prim_path, *const_cast<PrimSpec *>(src_ps), warn, err)) {
+          // Replace prim path prefix. If `reference.prim_path` is invalid
+          // (e.g. `prepend references = @./file.usdc@` with no explicit prim
+          // path), `ReplaceRootPrimPathRec` would silently no-op every
+          // relationship in the inlined subtree, leaving absolute paths
+          // (`</_materials/Material_4>`, skel:skeleton targets, etc.)
+          // unrewritten. We fall back to deriving the source prefix from the
+          // loaded primspec's own name — which is what `LoadAsset` itself
+          // uses internally to find that primspec (via defaultPrim or
+          // first-prim heuristic, see line ~410).
+          Path src_prefix = reference.prim_path.is_valid()
+              ? reference.prim_path
+              : Path("/" + src_ps->name(), "");
+          if (!ReplaceRootPrimPathRec(src_prefix, dst_prim_path, *const_cast<PrimSpec *>(src_ps), warn, err)) {
             return false;
           }
 
@@ -730,8 +755,11 @@ bool CompositeReferencesRec(uint32_t depth, AssetResolutionResolver &resolver,
             continue;
           }
 
-          // Replace prim path prefix
-          if (!ReplaceRootPrimPathRec(reference.prim_path, dst_prim_path, *const_cast<PrimSpec *>(src_ps), warn, err)) {
+          // Replace prim path prefix — see Prepend branch comment above.
+          Path src_prefix = reference.prim_path.is_valid()
+              ? reference.prim_path
+              : Path("/" + src_ps->name(), "");
+          if (!ReplaceRootPrimPathRec(src_prefix, dst_prim_path, *const_cast<PrimSpec *>(src_ps), warn, err)) {
             return false;
           }
 
@@ -829,8 +857,12 @@ bool CompositePayloadRec(uint32_t depth, AssetResolutionResolver &resolver,
             continue;
           }
 
-          // Replace prim path prefix
-          if (!ReplaceRootPrimPathRec(pl.prim_path, dst_prim_path, *const_cast<PrimSpec *>(src_ps), warn, err)) {
+          // Replace prim path prefix — see CompositeReferencesRec
+          // Prepend-branch comment for rationale.
+          Path src_prefix = pl.prim_path.is_valid()
+              ? pl.prim_path
+              : Path("/" + src_ps->name(), "");
+          if (!ReplaceRootPrimPathRec(src_prefix, dst_prim_path, *const_cast<PrimSpec *>(src_ps), warn, err)) {
             return false;
           }
 
@@ -897,8 +929,12 @@ bool CompositePayloadRec(uint32_t depth, AssetResolutionResolver &resolver,
             continue;
           }
 
-          // Replace prim path prefix
-          if (!ReplaceRootPrimPathRec(pl.prim_path, dst_prim_path, *const_cast<PrimSpec *>(src_ps), warn, err)) {
+          // Replace prim path prefix — see CompositeReferencesRec
+          // Prepend-branch comment for rationale.
+          Path src_prefix = pl.prim_path.is_valid()
+              ? pl.prim_path
+              : Path("/" + src_ps->name(), "");
+          if (!ReplaceRootPrimPathRec(src_prefix, dst_prim_path, *const_cast<PrimSpec *>(src_ps), warn, err)) {
             return false;
           }
 
