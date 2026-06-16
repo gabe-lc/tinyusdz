@@ -2163,11 +2163,18 @@ bool CrateReader::ReadBootStrap() {
     return false;
   }
 
-  // Currently up to 0.9.0
-  if ((version[0] == 0) && (version[1] < 10)) {
+  // Accept 0.10.x optimistically. Upstream's 0.10.0 (post-2024) didn't
+  // introduce a breaking change to the TOC/field-section layout this reader
+  // depends on — the version-conditional logic in this file only branches
+  // on < 0.4.0 (hard error) and < 0.8.0 (legacy macro). New optional
+  // sections we don't understand will either parse as "unknown" or fail
+  // downstream with a more specific error than a blanket version reject.
+  // Hard-cap stays at major>0 / minor>=11 so we still fail loudly on a
+  // genuinely new major format change.
+  if ((version[0] == 0) && (version[1] < 11)) {
     // ok
   } else {
-    PUSH_ERROR_AND_RETURN_TAG(kTag, fmt::format("Unsupported version {}.{}.{}. TinyUSDZ supports version up to 0.9.0",
+    PUSH_ERROR_AND_RETURN_TAG(kTag, fmt::format("Unsupported version {}.{}.{}. TinyUSDZ supports version up to 0.10.x",
       _version[0], _version[1], _version[2]));
   }
 
