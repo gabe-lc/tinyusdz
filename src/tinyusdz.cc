@@ -1555,6 +1555,42 @@ bool LoadLayerFromAsset(AssetResolutionResolver &resolver, const std::string &re
                            options);
 }
 
+// Collapse "./" and "../" segments in a USDZ-internal path. Used by
+// USDZResolveAsset so that `references = @../../Materials/.../MI_*.usd@`
+// authored relative to a deep material/mesh layer can hit the (flat,
+// archive-rooted) asset_map. Treats any leading ".." segments that try to
+// escape the archive root as a hard fail — they cannot resolve to a real
+// archive entry. Pure string transform, no filesystem access.
+static bool NormalizeUSDZPath(const std::string &in, std::string *out) {
+  if (!out) return false;
+  std::vector<std::string> stack;
+  size_t i = 0;
+  while (i < in.size()) {
+    size_t j = in.find('/', i);
+    std::string seg = (j == std::string::npos) ? in.substr(i) : in.substr(i, j - i);
+    if (seg.empty() || seg == ".") {
+      // skip
+    } else if (seg == "..") {
+      if (stack.empty()) {
+        // escape attempt — caller treats as not-found.
+        return false;
+      }
+      stack.pop_back();
+    } else {
+      stack.push_back(std::move(seg));
+    }
+    if (j == std::string::npos) break;
+    i = j + 1;
+  }
+  std::string joined;
+  for (size_t k = 0; k < stack.size(); k++) {
+    if (k) joined += '/';
+    joined += stack[k];
+  }
+  *out = std::move(joined);
+  return true;
+}
+
 int USDZResolveAsset(const char *asset_name, const std::vector<std::string> &search_paths, std::string *resolved_asset_name, std::string *err, void *userdata) {
 
   DCOUT("Resolve asset: " << asset_name);
@@ -1605,8 +1641,10 @@ int USDZResolveAsset(const char *asset_name, const std::vector<std::string> &sea
   //    propagates each layer's cwd into `search_paths`; without using it here,
   //    Unreal-style nested layouts would silently fail to resolve any texture
   //    that isn't in the archive root. We normalize separators to `/` (USDZ
-  //    spec uses forward slashes) and skip ascending `..` segments — relative
-  //    paths inside USDZ may not escape the archive root.
+  //    spec uses forward slashes) and collapse `./` and `../` segments so
+  //    deep-layer refs like `prepend references = @../../Materials/.../MI_*.usd@`
+  //    (Unreal decal/curtain/door assets) resolve against the flat archive
+  //    asset_map. Any `..` chain that escapes the archive root is a hard miss.
   for (const auto &raw_prefix : search_paths) {
     if (raw_prefix.empty()) continue;
 
@@ -1628,6 +1666,16 @@ int USDZResolveAsset(const char *asset_name, const std::vector<std::string> &sea
     if (passet->asset_map.count(candidate)) {
       DCOUT("Resolved asset: " << asset_name << " as " << candidate);
       (*resolved_asset_name) = candidate;
+      return 0;
+    }
+
+    // Normalize `./` and `../` segments and retry. This catches the deep-layer
+    // relative-ref pattern described above.
+    std::string normalized;
+    if (NormalizeUSDZPath(candidate, &normalized) &&
+        passet->asset_map.count(normalized)) {
+      DCOUT("Resolved asset (normalized): " << asset_name << " as " << normalized);
+      (*resolved_asset_name) = normalized;
       return 0;
     }
   }

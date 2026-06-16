@@ -103,8 +103,6 @@ bool ReplaceRootPrimPathRec(
 
   (void)warn;
 
-  std::cout << "[ReplaceRootPrimPathRec] srcPrefix='" << srcPrefix << "' dstPrefix='" << dstPrefix << "' on prim='" << ps.name() << "'\n";
-
   constexpr size_t kMaxIter = 1024 * 1024 * 128;
 
   std::vector<PrimSpec *> stack;
@@ -643,14 +641,16 @@ bool CompositeReferencesRec(uint32_t depth, AssetResolutionResolver &resolver,
     PUSH_ERROR_AND_RETURN("Too deep.");
   }
 
-  // Traverse children first.
-  for (auto &child : primspec.children()) {
-    const Path parent_prim_path = dst_prim_path.AppendPrim(child.name());
-    if (!CompositeReferencesRec(depth + 1, resolver, asset_search_paths, parent_prim_path, in_layer, child,
-                                warn, err, options)) {
-      return false;
-    }
-  }
+  // Pre-order: process THIS primspec's references arc first, then recurse
+  // into children. This single pass naturally catches both pre-existing
+  // children and any newly inlined by InheritPrimSpec/OverridePrimSpec
+  // below (e.g. `over "UnrealMaterial" (references = @./MI_*.usd@)` nested
+  // inside a `def Mesh (references = @./SM_*.usd@)` asset). A prior
+  // implementation did post-order plus a second-pass at the end — correct
+  // but O(2^D) in tree depth, which hung scenes with deep LOD/material
+  // chains (Unreal AbandonedFactory). References-arc composition is
+  // commutative within a single arc type so order of children-vs-parent
+  // doesn't change the final composed result.
 
   // Use PrimSpec's AssetResolution state.
   std::string cwp = primspec.get_current_working_path();
@@ -810,6 +810,18 @@ bool CompositeReferencesRec(uint32_t depth, AssetResolutionResolver &resolver,
 
   // Remove `references`.
   primspec.metas().references.reset();
+
+  // Recurse into children — captures both host-authored children and any
+  // newly inlined by InheritPrimSpec/OverridePrimSpec above (see pre-order
+  // rationale at top of function).
+  for (auto &child : primspec.children()) {
+    const Path child_prim_path = dst_prim_path.AppendPrim(child.name());
+    if (!CompositeReferencesRec(depth + 1, resolver, asset_search_paths,
+                                child_prim_path, in_layer, child, warn, err,
+                                options)) {
+      return false;
+    }
+  }
 
   return true;
 }
