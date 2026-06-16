@@ -3723,8 +3723,21 @@ bool RenderSceneConverter::ConvertMaterial(const RenderSceneConverterEnv &env,
       }
       surfacePath = paths[0];
     } else {
-      // Material without outputs:surface (e.g. stub/empty material).
-      // Create a default material and return successfully.
+      // Material without outputs:surface (e.g. stub/empty material, or a
+      // UE-exported MI where the shader graph was stripped during reference
+      // composition). Create a default material and return successfully.
+      //
+      // Investigated `outputs:unreal:surface` + child-shader fallbacks here:
+      // UE flat-MI materials (`/Root/Decals/SM_Decal_*/UnrealMaterial`,
+      // `/Root/Props/SM_Painting_*/UnrealMaterial`, etc.) reach this point
+      // with their referenced shader graph fully missing — the `UnrealShader`
+      // prim that survives composition has info_id="" and an empty props
+      // map, so there's nothing tydra can translate. The real fix is in
+      // composition: `references` arcs authored on `over` prims that point
+      // at MI_*.usd files need to be followed so the MI's Shader graph
+      // populates the over's content. The bed renders correctly because
+      // its UnrealMaterial is inline in the asset's variant body, not via
+      // a reference on an over.
       PUSH_WARN(fmt::format(
           "{}'s outputs:surface isn't authored. "
           "Using default material.",

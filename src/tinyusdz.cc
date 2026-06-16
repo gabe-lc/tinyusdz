@@ -1587,14 +1587,78 @@ int USDZResolveAsset(const char *asset_name, const std::vector<std::string> &sea
     asset_path = tinyusdz::removePrefix(asset_path, "./");
   }
 
-  // Not used
-  (void)search_paths;
-
   const USDZAsset *passet = reinterpret_cast<const USDZAsset *>(userdata);
 
+  // 1) Literal lookup (handles refs authored relative to the archive root,
+  //    such as the root layer's own references to sibling files).
   if (passet->asset_map.count(asset_path)) {
     DCOUT("Resolved asset: " << asset_name << " as " << asset_path);
     (*resolved_asset_name) = asset_path;
+    return 0;
+  }
+
+  // 2) Try each caller-supplied search path as a prefix. Asset references in
+  //    USD are resolved relative to the *layer* that authored them — e.g. a
+  //    material at `Assets/Game/Foo/Materials/MI_Bar.usd` saying
+  //    `inputs:file = @Textures/Bar_BaseColor.png@` should resolve against the
+  //    material's directory, not the archive root. The composition pipeline
+  //    propagates each layer's cwd into `search_paths`; without using it here,
+  //    Unreal-style nested layouts would silently fail to resolve any texture
+  //    that isn't in the archive root. We normalize separators to `/` (USDZ
+  //    spec uses forward slashes) and skip ascending `..` segments — relative
+  //    paths inside USDZ may not escape the archive root.
+  for (const auto &raw_prefix : search_paths) {
+    if (raw_prefix.empty()) continue;
+
+    std::string prefix = raw_prefix;
+    for (auto &c : prefix) {
+      if (c == '\\') c = '/';
+    }
+    // Strip a leading "./" — common artifact of cwd propagation.
+    if (tinyusdz::startsWith(prefix, "./")) {
+      prefix = tinyusdz::removePrefix(prefix, "./");
+    }
+    // Drop trailing slashes so we get exactly one separator.
+    while (!prefix.empty() && prefix.back() == '/') {
+      prefix.pop_back();
+    }
+    if (prefix.empty()) continue;
+
+    const std::string candidate = prefix + "/" + asset_path;
+    if (passet->asset_map.count(candidate)) {
+      DCOUT("Resolved asset: " << asset_name << " as " << candidate);
+      (*resolved_asset_name) = candidate;
+      return 0;
+    }
+  }
+
+  // 3) Suffix fallback. Real Unreal scenes have textures referenced from
+  //    deeply-nested material files using paths like `Textures/T_Foo.png`
+  //    that are relative to the *material's* layer directory. The composition
+  //    resolver's `search_paths` reflects the root layer's cwd, not the
+  //    per-material cwd, so the prefix-based lookup above misses those.
+  //
+  //    As a last resort, scan the asset map for entries whose full archive
+  //    path ends with `/<asset_path>` and return one if exactly one matches.
+  //    Unreal flattens texture filenames with a long unique prefix (e.g.
+  //    `Game_AtmosphericHouse_Materials_Worn_MI_Foo_BaseColor.png`), so
+  //    collisions are extremely rare in practice. If multiple matches exist
+  //    we bail to avoid binding the wrong texture silently.
+  const std::string suffix_match = "/" + asset_path;
+  const std::string *unique_hit = nullptr;
+  size_t hit_count = 0;
+  for (const auto &kv : passet->asset_map) {
+    const std::string &key = kv.first;
+    if (key.size() <= suffix_match.size()) continue;
+    if (key.compare(key.size() - suffix_match.size(),
+                    suffix_match.size(), suffix_match) == 0) {
+      unique_hit = &key;
+      if (++hit_count > 1) break;
+    }
+  }
+  if (hit_count == 1 && unique_hit) {
+    DCOUT("Resolved asset (suffix-fallback): " << asset_name << " as " << *unique_hit);
+    (*resolved_asset_name) = *unique_hit;
     return 0;
   }
 

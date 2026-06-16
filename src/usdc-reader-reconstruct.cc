@@ -1196,7 +1196,17 @@ bool USDCReader::Impl::ReconstructPrimSpecRecursively(
   }
 
   if (!stagedPrimSpec.name().empty()) {
-    if (parentPrimSpec) {
+    // A prim whose `parent` is a Variant container (e.g. `def Mesh "LOD1"`
+    // sitting inside variantSet "LOD" { "LOD1" { ... } }) must be routed
+    // into the variant body's children — `_variantPrimSpecs[parent]` — not
+    // into the host PrimSpec or layer top-level. Without this, the variant
+    // bodies end up empty (or with placeholder unnamed children), and the
+    // composed Stage shows the SkelRoot with no Mesh inside it.
+    if (_variantPrimSpecs.count(parent)) {
+      PrimSpec &variantContainer = _variantPrimSpecs.at(parent);
+      variantContainer.children().push_back(std::move(stagedPrimSpec));
+      currPrimSpecPtr = &variantContainer.children().back();
+    } else if (parentPrimSpec) {
       parentPrimSpec->children().push_back(std::move(stagedPrimSpec));
       currPrimSpecPtr = &parentPrimSpec->children().back();
     } else {
@@ -1282,11 +1292,18 @@ bool USDCReader::Impl::ReconstructPrimSpecRecursively(
 
   if (_variantPrimChildren.count(current)) {
 
-    if (!primspecPtr) {
+    // `stagedPrimSpec` (which `primspecPtr` aliases) was already moved into
+    // the Layer/parent at the top of this function — its name is empty in
+    // moved-from state, and writing variantSets() into it would attach the
+    // variant bodies to a temp that's about to be destroyed. The inserted
+    // instance is at `currPrimSpecPtr`; that's the one to write into.
+    PrimSpec *targetPrimSpec = currPrimSpecPtr ? currPrimSpecPtr : primspecPtr;
+
+    if (!targetPrimSpec) {
       PUSH_ERROR_AND_RETURN("Internal error: must be Prim.");
     }
 
-    DCOUT(fmt::format("{} has variant PrimSpec ", primspecPtr->name()));
+    DCOUT(fmt::format("{} has variant PrimSpec ", targetPrimSpec->name()));
 
     for (const auto &item : _variantPrimChildren.at(current)) {
 
@@ -1310,7 +1327,7 @@ bool USDCReader::Impl::ReconstructPrimSpecRecursively(
       std::string variantSetName = toks[0];
       std::string variantName = toks[1];
 
-      VariantSetSpec &vs = primspecPtr->variantSets()[variantSetName];
+      VariantSetSpec &vs = targetPrimSpec->variantSets()[variantSetName];
 
       if (vs.name.empty()) {
         vs.name = variantSetName;
@@ -1324,26 +1341,13 @@ bool USDCReader::Impl::ReconstructPrimSpecRecursively(
 
   DCOUT(fmt::format("-<---"));
 
-  if (parent == 0) {  // root prim
-    if (primspecPtr) {
-      std::string name = primspecPtr->name();
-      layer->primspecs()[name] = std::move(*primspecPtr);
-    }
-  } else {
-    if (_variantPrimSpecs.count(parent)) {
-      DCOUT("parent is variantPrim: " << parent);
-      if (!primspecPtr) {
-        PUSH_WARN("parent is variantPrim, but current is not Prim.");
-      } else {
-        DCOUT("Adding prim to child...");
-        PrimSpec &vps = _variantPrimSpecs.at(parent);
-        vps.children().emplace_back(std::move(*primspecPtr));
-      }
-    } else if (primspecPtr && parentPrimSpec) {
-      parentPrimSpec->children().resize(parentPrimSpec->children().size() + 1);
-      parentPrimSpec->children().back() = std::move(*primspecPtr);
-    }
-  }
+  // Insertion now happens once, at the top of this function (see the block
+  // guarded by `if (!stagedPrimSpec.name().empty())`). The previous trailing
+  // insertion block here ran *after* `stagedPrimSpec` had already been moved
+  // into its destination, so it appended a default-constructed PrimSpec
+  // (empty name, no specifier, no typeName) into every parent's children
+  // vector — producing the stream of nameless `xform` placeholder prims that
+  // showed up between every real child in the composed tree.
 
   return true;
 }

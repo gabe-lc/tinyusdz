@@ -170,6 +170,20 @@ bool ReplaceRootPrimPathRec(
     for (auto it = children.rbegin(); it != children.rend(); ++it) {
       stack.push_back(&(*it));
     }
+
+    // Also walk variant-body children. Path-bearing properties inside a
+    // variant body (e.g. material:binding rels on the LOD1 mesh) need the
+    // same source-prefix rewrite as regular children. Without this, a
+    // referenced layer's variants keep the original prim path prefix and
+    // later Stage construction can't resolve them.
+    for (auto &vs_pair : current->variantSets()) {
+      for (auto &v_pair : vs_pair.second.variantSet) {
+        auto &v_children = v_pair.second.children();
+        for (auto it = v_children.rbegin(); it != v_children.rend(); ++it) {
+          stack.push_back(&(*it));
+        }
+      }
+    }
   }
 
   return true;
@@ -202,6 +216,18 @@ bool PropagateAssetResolverState(PrimSpec &ps,
     auto &children = current->children();
     for (auto it = children.rbegin(); it != children.rend(); ++it) {
       stack.push_back(&(*it));
+    }
+
+    // Variant-body children also need asset resolution state propagated so
+    // that any further composition arcs (references inside a variant body)
+    // resolve against the right working path.
+    for (auto &vs_pair : current->variantSets()) {
+      for (auto &v_pair : vs_pair.second.variantSet) {
+        auto &v_children = v_pair.second.children();
+        for (auto it = v_children.rbegin(); it != v_children.rend(); ++it) {
+          stack.push_back(&(*it));
+        }
+      }
     }
   }
 
@@ -1372,6 +1398,31 @@ static bool OverridePrimSpecRec(uint32_t depth, PrimSpec &dst,
   dst.metas().update_from(src.metas());
   DCOUT("update_from done");
 
+  // Promote typeName/specifier from src when dst contributes no type info
+  // of its own. USD composition rule: layering an `over` (or typeless `def`)
+  // `dst` with a `def Mesh` (or similar) `src` should yield `def Mesh`.
+  //
+  // Concretely fixes Unreal LOD scenes: a host `over "Section0" {...}`
+  // (material-binding override) layered onto a variant body's
+  // `def Mesh "Section0" {...}` was emerging with typeName=""/specifier=Over,
+  // which ReconstructPrimFromPrimSpec then turns into a typeless Model and
+  // tydra reports as nodeType=xform — losing all mesh data.
+  //
+  // Narrow rule: only fire when dst is genuinely uninformative
+  // (empty/"Model" typeName, Over specifier). A dst already authored as
+  // `def DomeLight` (or any other typed `def`) keeps its own type/specifier,
+  // which is why this doesn't regress lights the way the broader earlier
+  // attempt did.
+  if (dst.typeName().empty() || dst.typeName() == "Model") {
+    if (!src.typeName().empty() && src.typeName() != "Model") {
+      dst.typeName() = src.typeName();
+    }
+  }
+  if (dst.specifier() == Specifier::Over &&
+      src.specifier() == Specifier::Def) {
+    dst.specifier() = Specifier::Def;
+  }
+
   // Override properties
   for (const auto &prop : src.props()) {
     // replace
@@ -1452,6 +1503,35 @@ static bool InheritPrimSpecImpl(PrimSpec &dst, const PrimSpec &src,
       if (!OverridePrimSpecRec(1, child, (*src_it), warn, err)) {
         return false;
       }
+    }
+  }
+
+  // Preserve host-authored children that don't correspond to a child in
+  // the referenced source. These are typically `over "<path>"` overrides
+  // the host scene authored expecting them to layer on top of content
+  // produced by later composition steps. Fixes nested-override patterns
+  // (e.g. doors in Unreal scenes) where the override target wasn't a
+  // direct child of the referenced root.
+  //
+  // KNOWN LIMITATION: if the referenced file's variantSet body would
+  // later produce a same-named child (e.g. Unreal LOD-variant pattern
+  // where `variantSet "LOD" { "LOD0" { def Mesh "LOD0" {} } }` collides
+  // with a host-authored `over "LOD0" {}`), the preserved `over` ends
+  // up surviving variant composition as an `over` LOD-mesh prim with
+  // mesh data attached but no `def` parent — `LayerToStage` can't
+  // instantiate it and the mesh disappears. Fixing that requires either
+  // a specifier-promotion rule in OverridePrimSpecRec that's narrower
+  // than "any over+def collision" (the broad version regressed lights),
+  // or detecting the collision here and skipping preservation. Tracked
+  // as follow-up.
+  for (auto &host_child : dst.children()) {
+    auto existing = std::find_if(
+        ps.children().begin(), ps.children().end(),
+        [&host_child](const PrimSpec &item) {
+          return item.name() == host_child.name();
+        });
+    if (existing == ps.children().end()) {
+      ps.children().push_back(host_child);
     }
   }
 

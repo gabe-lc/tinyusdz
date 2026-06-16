@@ -644,8 +644,14 @@ bool VariantSelectPrimSpec(
         }
 
         for (const auto &child : vs.children()) {
-          // Override if PrimSpec has same name
-          // simple linear scan.
+          // If the host already has a same-named child (typically an
+          // `over` authored against this nested path expecting the
+          // variant body to fill it in — common in Unreal LOD assets
+          // where the variant name and the variant body's mesh name
+          // collide on "LOD0"/"LOD1"), the variant body is the BASE
+          // and the host's existing child layers on top as overrides.
+          // Naïvely replacing here loses host overrides that were
+          // preserved through reference composition.
           auto it = std::find_if(ps.children().begin(), ps.children().end(),
                                  [&child](const PrimSpec &item) {
                                    return (item.name() == child.name());
