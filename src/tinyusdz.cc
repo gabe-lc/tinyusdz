@@ -1710,6 +1710,67 @@ int USDZResolveAsset(const char *asset_name, const std::vector<std::string> &sea
     return 0;
   }
 
+  // 4) Escape-tolerant suffix fallback. Unreal exports sometimes author
+  //    references using paths relative to the source project on the
+  //    exporter's filesystem, not the USDZ archive root — e.g.
+  //    `@../../../../../USD_Exports/AbandonedFactory/Assets/SM_Barrel.usd@`.
+  //    Five levels of `..` mean NormalizeUSDZPath bails (root escape) and
+  //    the literal suffix in step 3 starts with `/..` which never matches.
+  //    Walk the path right-to-left, suffix-matching progressively shorter
+  //    tails (`.../Assets/SM_Barrel.usd` → `Assets/SM_Barrel.usd` → just the
+  //    basename), and return the first uniquely-matching tail. Last-resort
+  //    only — the earlier strategies handle correctly-authored references.
+  {
+    // Trim leading "./" and "../" segments off asset_path; we only want the
+    // forward-going tail.
+    std::string tail = asset_path;
+    while (true) {
+      if (tinyusdz::startsWith(tail, "./")) {
+        tail = tinyusdz::removePrefix(tail, "./");
+      } else if (tinyusdz::startsWith(tail, "../")) {
+        tail = tinyusdz::removePrefix(tail, "../");
+      } else {
+        break;
+      }
+    }
+
+    // Walk component boundaries left-to-right inside `tail`, trying each
+    // progressively shorter tail starting at component boundaries.
+    size_t pos = 0;
+    while (pos < tail.size()) {
+      const std::string candidate_tail = tail.substr(pos);
+      const std::string suffix = "/" + candidate_tail;
+      const std::string *hit = nullptr;
+      size_t n = 0;
+      for (const auto &kv : passet->asset_map) {
+        const std::string &key = kv.first;
+        if (key == candidate_tail) {
+          // Exact archive-root match.
+          DCOUT("Resolved asset (escape-tolerant tail): " << asset_name
+                                                          << " as " << key);
+          (*resolved_asset_name) = key;
+          return 0;
+        }
+        if (key.size() > suffix.size() &&
+            key.compare(key.size() - suffix.size(), suffix.size(), suffix) ==
+                0) {
+          hit = &key;
+          if (++n > 1) break;
+        }
+      }
+      if (n == 1 && hit) {
+        DCOUT("Resolved asset (escape-tolerant tail): " << asset_name
+                                                        << " as " << *hit);
+        (*resolved_asset_name) = *hit;
+        return 0;
+      }
+      // Advance to the next `/` boundary and try a shorter tail.
+      size_t slash = tail.find('/', pos);
+      if (slash == std::string::npos) break;
+      pos = slash + 1;
+    }
+  }
+
   return -1; // not found
 }
 
