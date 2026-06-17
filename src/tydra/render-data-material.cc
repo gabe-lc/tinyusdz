@@ -1596,8 +1596,6 @@ nonstd::expected<bool, std::string> GetConnectedUVTexture(
   constexpr auto kOutputsB = "outputs:b";
   constexpr auto kOutputsA = "outputs:a";
 
-  TUSDZ_LOG_I("path: " << path);
-
   // Check if prop_part is a standard UsdUVTexture output
   bool is_standard_output = (prop_part == kOutputsRGB) ||
                             (prop_part == kOutputsR) ||

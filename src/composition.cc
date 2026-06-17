@@ -125,28 +125,12 @@ bool ReplaceRootPrimPathRec(
 
         if (rel.is_path()) {
           if (rel.targetPath.has_prefix(srcPrefix)) {
-            Path before = rel.targetPath;
             rel.targetPath.replace_prefix(srcPrefix, dstPrefix);
-            std::cout << "  rel '" << prop.first << "' on prim='" << current->name()
-                      << "': '" << before << "' -> '" << rel.targetPath << "'\n";
-          } else {
-            std::cout << "  rel '" << prop.first << "' on prim='" << current->name()
-                      << "': '" << rel.targetPath << "' no prefix match (srcPrefix='"
-                      << srcPrefix << "'), LEFT AS-IS\n";
           }
         } else if (rel.is_pathvector()) {
-
           for (auto &path : rel.targetPathVector) {
             if (path.has_prefix(srcPrefix)) {
-              Path before = path;
               path.replace_prefix(srcPrefix, dstPrefix);
-              std::cout << "  rel-vec '" << prop.first << "' on prim='"
-                        << current->name() << "': '" << before << "' -> '" << path
-                        << "'\n";
-            } else {
-              std::cout << "  rel-vec '" << prop.first << "' on prim='"
-                        << current->name() << "': '" << path
-                        << "' no prefix match, LEFT AS-IS\n";
             }
           }
         }
