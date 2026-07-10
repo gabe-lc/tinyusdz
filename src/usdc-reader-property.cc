@@ -319,19 +319,29 @@ bool USDCReader::Impl::ParseProperty(const SpecType spec_type,
       hasConnectionPaths = true;
 
       if (auto pv = fv.second.get_value<ListOp<Path>>()) {
-        auto p = pv.value();
+        const ListOp<Path> &p = pv.value();
         DCOUT("connectionPaths = " << to_string(p));
 
-        if (!p.IsExplicit()) {
-          PUSH_ERROR_AND_RETURN_TAG(
-              kTag, "`connectionPaths` must be composed of Explicit items.");
+        // USD may author connectionPaths with non-Explicit ListOp types
+        // (e.g. appended/prepended for MaterialX surface outputs). Decode
+        // like targetPaths: take the first ListOpType's items.
+        auto ps = DecodeListOp<Path>(p);
+
+        if (ps.empty()) {
+          PUSH_ERROR_AND_RETURN_TAG(kTag, "`connectionPaths` is empty.");
         }
 
-        // Must be explicit_items for now.
-        auto items = p.GetExplicitItems();
-        if (items.size() == 0) {
-          PUSH_ERROR_AND_RETURN_TAG(
-              kTag, "`connectionPaths` have empty Explicit items.");
+        if (ps.size() > 1) {
+          PUSH_WARN(
+              "ListOp with multiple ListOpType is not supported for now. Use "
+              "the first one: " +
+              to_string(std::get<0>(ps[0])));
+        }
+
+        auto items = std::get<1>(ps[0]);
+        if (items.empty()) {
+          PUSH_ERROR_AND_RETURN_TAG(kTag,
+                                    "`connectionPaths` have empty items.");
         }
 
         attr.set_connections(items);

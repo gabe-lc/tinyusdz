@@ -3390,6 +3390,50 @@ class TinyUSDZLoaderNative {
         mesh.set("tangents", emscripten::typed_memory_view(cache.tangents.size(), cache.tangents.data()));
       }
 
+      // Reorder skin joint indices/weights by material — CRITICAL.
+      // Without this, positions/normals/uvs/tangents get shuffled into
+      // material-contiguous order above while the skin data stays in the
+      // original triangle order. On a multi-material skinned mesh that means
+      // every vertex ends up bound to the wrong bones: it looks fine at bind
+      // (all bone matrices ~identity) but explodes the instant the skeleton is
+      // animated. Joints are laid out per-face-vertex (numTris*3 * elementSize)
+      // in the same original triangle order as points, so reorder them the
+      // same way. If a build instead stores them per-point, fall back to
+      // indexing through faceVertexIndices (matches the points reorder).
+      if (!rmesh.joint_and_weights.jointIndices.empty() &&
+          rmesh.joint_and_weights.elementSize > 0) {
+        const int es = rmesh.joint_and_weights.elementSize;
+        const auto& srcJI = rmesh.joint_and_weights.jointIndices;
+        const auto& srcJW = rmesh.joint_and_weights.jointWeights;
+        const size_t jointVertCount = srcJI.size() / static_cast<size_t>(es);
+        const bool jointsFaceVarying = (jointVertCount == fvIndices.size());
+        std::vector<int> reJI(numNewTriangles * 3 * static_cast<size_t>(es), 0);
+        std::vector<float> reJW(numNewTriangles * 3 * static_cast<size_t>(es), 0.0f);
+        for (size_t nt = 0; nt < numNewTriangles; nt++) {
+          int ot = reorderMap[nt];
+          for (int v = 0; v < 3; v++) {
+            size_t oldFV = static_cast<size_t>(ot) * 3 + static_cast<size_t>(v);
+            size_t newFV = nt * 3 + static_cast<size_t>(v);
+            size_t srcVert = jointsFaceVarying
+                ? oldFV
+                : (oldFV < fvIndices.size() ? static_cast<size_t>(fvIndices[oldFV]) : 0);
+            for (int j = 0; j < es; j++) {
+              size_t s = srcVert * static_cast<size_t>(es) + static_cast<size_t>(j);
+              size_t d = newFV * static_cast<size_t>(es) + static_cast<size_t>(j);
+              if (s < srcJI.size()) reJI[d] = srcJI[s];
+              if (s < srcJW.size()) reJW[d] = srcJW[s];
+            }
+          }
+        }
+        auto& jcache = reordered_mesh_cache_[mesh_id];
+        jcache.jointIndices = std::move(reJI);
+        jcache.jointWeights = std::move(reJW);
+        mesh.set("jointIndices", emscripten::typed_memory_view(
+            jcache.jointIndices.size(), jcache.jointIndices.data()));
+        mesh.set("jointWeights", emscripten::typed_memory_view(
+            jcache.jointWeights.size(), jcache.jointWeights.data()));
+      }
+
       // Generate new sequential indices (0, 1, 2, 3, 4, 5, ...)
       // Since we reordered the vertex data to facevarying, indices are sequential
       std::vector<uint32_t> newIndices(numNewTriangles * 3);
@@ -4964,6 +5008,8 @@ class TinyUSDZLoaderNative {
     std::vector<float> texcoords;
     std::vector<float> tangents;
     std::vector<uint32_t> faceVertexIndices;
+    std::vector<int> jointIndices;     // skin joint indices, reordered by material
+    std::vector<float> jointWeights;   // skin joint weights, reordered by material
   };
   mutable std::unordered_map<int, ReorderedMeshCache> reordered_mesh_cache_;
 

@@ -3754,48 +3754,66 @@ bool BuildSkelHierarchy(const Skeleton &skel, SkelNode &dst, std::string *err) {
                     joints.size(), restTransforms.size(), skel.name));
   }
 
-  // Just in case. Chek if topology is single-rooted.
-  auto nroots = std::count_if(parentJointIds.begin(), parentJointIds.end(),
-                              [](int x) { return x == -1; });
-
-  if (nroots == 0) {
-    PUSH_ERROR_AND_RETURN(fmt::format(
-        "Invalid Skel topology. No root joint found: {}", skel.name));
-  }
-
-  if (nroots != 1) {
-    PUSH_ERROR_AND_RETURN(
-        fmt::format("Invalid Skel topology. Topology must be single-rooted, "
-                    "but it has {} roots: {}",
-                    nroots, skel.name));
-  }
-
-  // Build parent -> children map for O(n) hierarchy construction
+  // Build parent -> children map for O(n) hierarchy construction, and collect
+  // root joints (parentId < 0).
   std::vector<std::vector<size_t>> childrenMap(joints.size());
-  size_t rootIdx = 0;
+  std::vector<size_t> rootIndices;
   for (size_t i = 0; i < parentJointIds.size(); i++) {
     int parentId = parentJointIds[i];
     if (parentId < 0) {
-      rootIdx = i;
+      rootIndices.push_back(i);
     } else {
       childrenMap[size_t(parentId)].push_back(i);
     }
   }
 
-  SkelNode root;
-  root.joint_name = jointNames[rootIdx].str();
-  root.joint_path = joints[rootIdx].str();
-  root.joint_id = int(rootIdx);
-  root.bind_transform = bindTransforms[rootIdx];
-  root.rest_transform = restTransforms[rootIdx];
+  if (rootIndices.empty()) {
+    PUSH_ERROR_AND_RETURN(fmt::format(
+        "Invalid Skel topology. No root joint found: {}", skel.name));
+  }
 
   DCOUT("parentJointIds = " << parentJointIds);
 
-  // Construct hierarchy from children map.
-  if (!detail::BuildSkelHierarchyImpl(root, childrenMap, joints, jointNames,
-                                      bindTransforms, restTransforms,
-                                      err)) {
-    return false;
+  // Build the SkelNode subtree rooted at joint `rootIdx` into `node`.
+  auto buildSubtree = [&](size_t rootIdx, SkelNode &node) -> bool {
+    node.joint_name = jointNames[rootIdx].str();
+    node.joint_path = joints[rootIdx].str();
+    node.joint_id = int(rootIdx);
+    node.bind_transform = bindTransforms[rootIdx];
+    node.rest_transform = restTransforms[rootIdx];
+    // Construct descendants from children map.
+    return detail::BuildSkelHierarchyImpl(node, childrenMap, joints, jointNames,
+                                          bindTransforms, restTransforms, err);
+  };
+
+  SkelNode root;
+  if (rootIndices.size() == 1) {
+    if (!buildSubtree(rootIndices[0], root)) {
+      return false;
+    }
+  } else {
+    // Multi-rooted joint forest. UsdSkel permits this (it is common for DCC
+    // exports that emit IK-target helper bones as independent top-level
+    // joints), but SkelNode is single-rooted. Wrap the forest in a synthetic
+    // identity "world" root.
+    //
+    // The synthetic root carries joint_id = -1: it maps to no entry in
+    // Skeleton.joints and is therefore never referenced by any skin index, so
+    // its identity transform leaves every real joint's world transform
+    // unchanged. Consumers that build a joint-indexed bone array must key on
+    // joint_id (skipping -1) rather than tree traversal order.
+    root.joint_name = skel.name;
+    root.joint_path = "";
+    root.joint_id = -1;
+    root.bind_transform = value::matrix4d::identity();
+    root.rest_transform = value::matrix4d::identity();
+    for (size_t r = 0; r < rootIndices.size(); r++) {
+      SkelNode child;
+      if (!buildSubtree(rootIndices[r], child)) {
+        return false;
+      }
+      root.children.emplace_back(std::move(child));
+    }
   }
 
   dst = root;
