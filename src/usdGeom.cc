@@ -351,9 +351,21 @@ const std::vector<int32_t> &GeomPrimvar::resolve_indices_at(
       return buf;
     }
   } else {
+    // Non-default timecode: prefer timesampled indices, but fall back to the
+    // default-authored indices when no timesamples exist. A non-timesampled
+    // `primvars:*:indices` value applies at every timecode — mirroring how
+    // Attribute value resolution returns the default value at any `t`, and how
+    // GeomPrimvar::get_indices() already falls back. Without this fallback, an
+    // indexed primvar authored with default (non-timesampled) indices resolves
+    // to empty indices at a concrete `t`, so flatten_with_indices() returns the
+    // un-expanded (deduplicated) value array and downstream facevarying-length
+    // checks fail (e.g. "texcoord `st` must be N, but got M").
     if (has_timesampled_indices()) {
       _ts_indices.get(&buf, t, tinterp);
       return buf;
+    }
+    if (has_default_indices()) {
+      return _indices;  // zero-copy
     }
   }
   static const std::vector<int32_t> empty;
